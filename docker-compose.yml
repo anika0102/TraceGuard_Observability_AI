@@ -1,0 +1,60 @@
+# Fast local path (no Kubernetes): app + full observability stack.
+#   docker compose up -d --build
+# Ports: app 8000 | Jaeger UI 16686 | Prometheus 9090 | Grafana 3000 | OTLP gRPC 4317, HTTP 4318
+name: traceguard
+
+services:
+  traceguard:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: traceguard:0.1.0
+    ports: ["8000:8000"]
+    environment:
+      TRACEGUARD_ENV: local
+      TRACEGUARD_ENABLE_FAULT_INJECTION: "true"
+      OTEL_EXPORTER_OTLP_ENDPOINT: otel-collector:4317
+      JAEGER_UI_URL: http://localhost:16686
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/ready').status==200 else 1)"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    depends_on: [otel-collector]
+
+  otel-collector:
+    image: otel/opentelemetry-collector:0.116.1
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./observability/otel-collector.yaml:/etc/otelcol/config.yaml:ro
+    ports: ["4317:4317", "4318:4318"]
+    depends_on: [jaeger]
+    # distroless image: no shell, so no container healthcheck here; the Kubernetes manifest probes :13133.
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.64.0
+    environment:
+      MEMORY_MAX_TRACES: "5000"
+    ports: ["16686:16686"]
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    command: ["--config.file=/etc/prometheus/prometheus.yaml", "--storage.tsdb.retention.time=2h"]
+    volumes:
+      - ./observability/prometheus.yaml:/etc/prometheus/prometheus.yaml:ro
+      - ./observability/alerts.yml:/etc/prometheus/alerts.yml:ro
+    ports: ["9090:9090"]
+    depends_on: [traceguard]
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    environment:
+      # Local demo only: anonymous read access, default admin/admin. Do not expose beyond localhost.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/traceguard.json
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ["3000:3000"]
+    depends_on: [prometheus, jaeger]

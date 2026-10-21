@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: traceguard-config
+  namespace: traceguard
+data:
+  # Non-sensitive settings only.
+  TRACEGUARD_ENV: "local"
+  TRACEGUARD_ENABLE_FAULT_INJECTION: "true"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "otel-collector:4317"
+  OTEL_SERVICE_NAME: "traceguard"
+  LATENCY_P95_THRESHOLD_MS: "1000"
+  ERROR_RATE_THRESHOLD: "0.2"
+  CORRECTNESS_FAILURE_THRESHOLD: "0.0"
+  JAEGER_UI_URL: "http://localhost:16686"

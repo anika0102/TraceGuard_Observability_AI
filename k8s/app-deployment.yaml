@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: traceguard
+  namespace: traceguard
+  labels:
+    app: traceguard
+spec:
+  # One replica keeps the demo deterministic: fault state and the incident window are per-process, and
+  # `kubectl port-forward` pins to one pod. Scale up only if you accept per-pod state (see README).
+  replicas: 1
+  revisionHistoryLimit: 5          # needed for `kubectl rollout undo`
+  selector:
+    matchLabels:
+      app: traceguard
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0            # new pod must be Ready before the old one is removed
+  template:
+    metadata:
+      labels:
+        app: traceguard
+    spec:
+      terminationGracePeriodSeconds: 15
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+      containers:
+        - name: traceguard
+          image: traceguard:0.1.0
+          imagePullPolicy: IfNotPresent   # image is loaded into kind, never pulled from a registry
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: traceguard-config
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+          startupProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:               # failure => kubelet restarts the container
+            httpGet: { path: /health, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:              # failure => pod removed from Service endpoints (no restart)
+            httpGet: { path: /ready, port: http }
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }

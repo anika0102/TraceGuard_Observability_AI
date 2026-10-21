@@ -1,0 +1,22 @@
+groups:
+  - name: traceguard
+    rules:
+      - alert: TraceGuardDown
+        expr: up{job="traceguard"} == 0
+        for: 15s
+        annotations:
+          summary: "Prometheus cannot scrape TraceGuard (pod down, restarting, or not in Service endpoints)"
+      - alert: TraceGuardNotReady
+        expr: traceguard_ready == 0
+        for: 15s
+        annotations:
+          summary: "TraceGuard reports not ready"
+      - alert: TraceGuardLatencyP95High
+        expr: histogram_quantile(0.95, sum by (le) (rate(traceguard_http_request_duration_seconds_bucket{route="/recommend"}[1m]))) > 1
+        for: 30s
+        annotations:
+          summary: "p95 /recommend latency above 1s"
+      - alert: TraceGuardIncorrectOutcomes
+        expr: sum(increase(traceguard_correctness_checks_total{result="incorrect"}[1m])) > 0
+        annotations:
+          summary: "Business outcome validation is failing even if HTTP status codes are 2xx"
