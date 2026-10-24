@@ -281,7 +281,9 @@ def infrastructure(request: Request):
     st = _state(request)
     s: Settings = st.settings
     store = telemetry.trace_store()
-    in_cluster = bool(os.environ.get("KUBERNETES_SERVICE_HOST"))
+    # Only claim OUR Kubernetes deployment (its manifest injects POD_NAME). Hosting platforms such as Render run
+    # containers on Kubernetes too and set KUBERNETES_SERVICE_HOST, which must not read as "the TraceGuard cluster".
+    in_cluster = bool(os.environ.get("KUBERNETES_SERVICE_HOST")) and bool(os.environ.get("POD_NAME"))
     pod = {k: os.environ.get(env) for k, env in (("pod_name", "POD_NAME"), ("namespace", "POD_NAMESPACE"))
            if os.environ.get(env)}
     recs = recordings.load_all()

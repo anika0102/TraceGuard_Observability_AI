@@ -21,7 +21,7 @@ export async function render(root, ctx) {
             h('td', {}, p.status === 'ok' ? status('good', 'passing') : status('critical', 'failing'))))),
           h('p', { class: 'muted', text: 'Liveness failure makes Kubernetes restart the container; readiness failure only removes the pod from the Service.' }))),
       h('div', { class: 'grid cols2' },
-        card('Runtime', 'live', kv([['Running in Kubernetes', rt.in_kubernetes ? 'yes' : 'no'], ['Pod', rt.pod_name], ['Namespace', rt.namespace],
+        card('Runtime', 'live', kv([['TraceGuard Kubernetes deployment', rt.in_kubernetes ? 'yes' : 'no (see the recorded runs for cluster behaviour)'], ['Pod', rt.pod_name], ['Namespace', rt.namespace],
           ['Container restart count', 'not visible from inside the process']]),
           h('p', { class: 'muted', text: rt.restart_count_note })),
         card('Embedded telemetry', 'live', kv([['Span store', `${l.telemetry.trace_store.traces}/${l.telemetry.trace_store.max_traces} traces (${l.telemetry.trace_store.spans} spans)`],
