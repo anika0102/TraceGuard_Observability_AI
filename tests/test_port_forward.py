@@ -92,7 +92,8 @@ class Env:
         return e
 
     def run(self, cmd):
-        return subprocess.run(["bash", str(SCRIPT), cmd], env=self.env(), capture_output=True, text=True, timeout=60)
+        return subprocess.run(["bash", str(SCRIPT), *cmd.split()], env=self.env(), capture_output=True, text=True,
+                              timeout=60)
 
     def pid(self, svc):
         return int((self.pids / f"{svc}.pid").read_text().strip())
@@ -212,3 +213,45 @@ def test_start_refuses_port_held_by_another_process(pf):
 
 def test_usage_error_for_unknown_command(pf):
     assert pf.run("bogus").returncode == 2
+
+
+def test_restart_single_service_leaves_the_others_untouched(pf):
+    pf.run("start")
+    before = {s: pf.pid(s) for s in SERVICES}
+    out = pf.run("restart traceguard")
+    assert out.returncode == 0, out.stdout + out.stderr
+    after = {s: pf.pid(s) for s in SERVICES}
+    assert after["traceguard"] != before["traceguard"] and not alive(before["traceguard"])
+    assert {s: after[s] for s in SERVICES if s != "traceguard"} == {s: before[s] for s in SERVICES if s != "traceguard"}
+    assert all(alive(p) and port_open(pf.ports[s]) for s, p in after.items())
+
+
+def test_restart_single_service_starts_it_if_not_running(pf):
+    out = pf.run("restart grafana")
+    assert out.returncode == 0 and port_open(pf.ports["grafana"])
+    assert not any((pf.pids / f"{s}.pid").exists() for s in SERVICES if s != "grafana")
+
+
+def test_stop_single_service_is_idempotent_and_isolated(pf):
+    pf.run("start")
+    others = {s: pf.pid(s) for s in SERVICES if s != "jaeger"}
+    victim = pf.pid("jaeger")
+    assert pf.run("stop jaeger").returncode == 0
+    assert wait_for(lambda: not alive(victim)) and not port_open(pf.ports["jaeger"])
+    assert pf.run("stop jaeger").returncode == 0  # second call is a no-op
+    assert all(alive(p) and port_open(pf.ports[s]) for s, p in others.items())
+
+
+def test_status_single_service(pf):
+    pf.run("start")
+    pf.run("stop prometheus")
+    assert pf.run("status traceguard").returncode == 0
+    assert pf.run("status prometheus").returncode == 1
+    assert pf.run("status").returncode == 1  # overall status still fails while one is down
+
+
+@pytest.mark.parametrize("cmd", ["start", "stop", "restart", "status"])
+def test_unknown_service_is_rejected_without_side_effects(pf, cmd):
+    out = pf.run(f"{cmd} not-a-service")
+    assert out.returncode == 2 and "unknown service" in out.stderr
+    assert not pf.pids.exists() or not list(pf.pids.glob("*.pid"))

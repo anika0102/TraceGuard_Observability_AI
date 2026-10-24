@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Port-forward the in-cluster services to localhost, detached from the launching shell.
-#   scripts/port-forward.sh start | stop | restart | status
+#   scripts/port-forward.sh start | stop | restart | status [service]
+#   (with no service, all of traceguard/jaeger/prometheus/grafana; with one, only that service)
 #
 # - Forwards survive the shell that started them (setsid + nohup), including one-shot `wsl -- bash ...` calls.
 # - PIDs are tracked in .pf/<service>.pid. `stop` only ever kills a PID whose command line is a
@@ -92,21 +93,32 @@ status_one() {
   echo "$svc: stopped"; return 1
 }
 
-each() {  # each FUNCTION: run it for every service; non-zero exit if any call failed
+TARGET="${2:-}"   # optional: act on a single service instead of all of them
+
+each() {  # each FUNCTION: run it for every selected service; non-zero exit if any call failed
   local fn=$1 rc=0 spec svc l r
   for spec in "${SERVICES[@]}"; do
     IFS=: read -r svc l r <<<"$spec"
+    [ -n "$TARGET" ] && [ "$svc" != "$TARGET" ] && continue
     "$fn" "$svc" "$l" "$r" || rc=1
   done
   return $rc
 }
+
+if [ -n "$TARGET" ]; then  # reject unknown names before doing anything
+  known=""; match=0
+  for spec in "${SERVICES[@]}"; do known="$known ${spec%%:*}"; [ "${spec%%:*}" = "$TARGET" ] && match=1; done
+  if [ "$match" -eq 0 ]; then echo "unknown service '$TARGET' (known:$known)" >&2; exit 2; fi
+fi
 
 case "${1:-start}" in
   start)
     command -v kubectl >/dev/null 2>&1 || { echo "ERROR: kubectl not installed" >&2; exit 1; }
     each start_one ;;
   stop) each stop_one ;;
-  restart) each stop_one; each start_one ;;
+  restart)
+    command -v kubectl >/dev/null 2>&1 || { echo "ERROR: kubectl not installed" >&2; exit 1; }
+    each stop_one; each start_one ;;
   status) each status_one ;;
-  *) echo "usage: $0 start|stop|restart|status" >&2; exit 2 ;;
+  *) echo "usage: $0 start|stop|restart|status [service]" >&2; exit 2 ;;
 esac

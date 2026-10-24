@@ -17,29 +17,54 @@ need_k8s() {
 }
 post() { curl -fsS -X POST "$BASE_URL$1" -H 'Content-Type: application/json' -d "$2"; }
 REC='{"user_id":"demo-user","category":"electronics","budget":250}'
+PROM_URL="${PROM_URL:-http://127.0.0.1:9090}"
+
+prom_query() {  # first value of an instant query, "none" if empty, "unavailable" if Prometheus can't be queried
+  curl -fsSG "$PROM_URL/api/v1/query" --data-urlencode "query=$1" 2>/dev/null \
+    | "$PY" -c "import sys,json;r=json.load(sys.stdin)['data']['result'];print(r[0]['value'][1] if r else 'none')" 2>/dev/null \
+    || echo "unavailable"
+}
+
+report_prometheus() {  # report_prometheus LABEL SINCE_EPOCH: report only what Prometheus actually recorded
+  local label=$1 since=$2 window up_min restarts
+  sleep 6  # longer than the 5 s scrape interval, so the scrape after recovery is included
+  window=$(( $(date +%s) - since + 5 ))
+  up_min=$(prom_query "min_over_time(up{job=\"traceguard\"}[${window}s])")
+  restarts=$(prom_query "changes(process_start_time_seconds{job=\"traceguard\"}[${window}s])")
+  case "$up_min" in
+    0) echo "   Prometheus ($label): recorded a failed scrape (up=0)" ;;
+    1) echo "   Prometheus ($label): NO failed scrape recorded (up stayed 1; an outage shorter than the 5 s scrape interval can fall between scrapes)" ;;
+    *) echo "   Prometheus ($label): not queryable at $PROM_URL, nothing to report" ;;
+  esac
+  echo "   Prometheus ($label): process restarts recorded = $restarts"
+}
 
 scenario_d() {
   echo; echo "=== Scenario D: pod failure and recovery ==="
   need_k8s || return 0
   echo "-- D1: container crash (same pod, RESTARTS increments: container restart by kubelet)"
   "${KC[@]}" get pods -l app=traceguard
+  T1=$(date +%s)
   post /simulate-failure '{"scenario":"crash"}'; echo
   sleep 4
   "${KC[@]}" wait --for=condition=ready pod -l app=traceguard --timeout=90s
   "${KC[@]}" get pods -l app=traceguard
+  report_prometheus "D1 crash" "$T1"
 
   echo "-- D2: delete the pod (new pod name: pod recreation by the ReplicaSet)"
   OLD=$("${KC[@]}" get pod -l app=traceguard -o jsonpath='{.items[0].metadata.name}')
+  T2=$(date +%s)
   "${KC[@]}" delete pod "$OLD" --wait=false
   sleep 2
   "${KC[@]}" get pods -l app=traceguard
   "${KC[@]}" wait --for=condition=ready pod -l app=traceguard --timeout=120s
   NEW=$("${KC[@]}" get pod -l app=traceguard -o jsonpath='{.items[0].metadata.name}')
   echo "old pod: $OLD   new pod: $NEW"
-  scripts/port-forward.sh restart >/dev/null
+  scripts/port-forward.sh restart traceguard >/dev/null   # a forward is bound to one pod; only the app's is stale
   echo "-- request after recovery:"; post /recommend "$REC" | "$PY" -c "import sys,json;d=json.load(sys.stdin);print('correct =',d['correctness']['correct'],' trace_id =',d['trace_id'])"
-  echo "Telemetry during the outage: scrapes fail (Prometheus 'up' = 0, 'Process restarts' panel increments);"
-  echo "no traces are produced while no pod serves traffic; Jaeger keeps traces from before the failure."
+  report_prometheus "D2 pod delete" "$T2"
+  echo "Note: while no pod is Ready the app cannot emit metrics or traces; Jaeger and Prometheus are separate pods,"
+  echo "so data from before the failure is kept. In-memory app state (fault flags, incident window) is reset."
 }
 
 scenario_e() {
@@ -54,7 +79,7 @@ scenario_e() {
   ansible-playbook -i ansible/inventory.ini ansible/recover-deployment.yml --check
   echo "-- real run"
   ansible-playbook -i ansible/inventory.ini ansible/recover-deployment.yml
-  scripts/port-forward.sh restart >/dev/null
+  scripts/port-forward.sh restart traceguard >/dev/null
   echo "-- after recovery (fault state was in-memory, so the restart cleared it):"
   post /recommend "$REC" | "$PY" -c "import sys,json;d=json.load(sys.stdin);print('correct =',d['correctness']['correct'])"
 }
