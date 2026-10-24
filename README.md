@@ -8,7 +8,9 @@ Everything below was **run and observed**, not just written. Tested on Windows 1
 
 | Layer | Result | How it was checked |
 |---|---|---|
-| Automated tests | **84 passed, 0 skipped** | 39 app/telemetry/incident/OTLP tests, 26 `port-forward.sh` tests (fake kubectl), 19 Ansible guardrail tests (fake kubectl). Run in a `python:3.12` container with ansible-core installed. |
+| Automated tests | **237 passed, 0 skipped** | App/telemetry/incident/OTLP, `port-forward.sh` (fake kubectl), Ansible guardrails (fake kubectl), dashboard backend (trace store, metric history, sandbox isolation, API, rate limits), public-mode security, static-UI safety rules, Render configuration. Run in a `python:3.12` container with ansible-core installed. |
+| Unified dashboard | **Verified in a real browser** (Edge): six pages render with no console errors or CSP violations; interactions work. Mobile overflow found and fixed. | Rendering was checked against the app running in the kind cluster, not yet against Render. |
+| Render deployment | **Rehearsed locally, not yet deployed** | The real image ran under Render's free limits (512 MB, 0.1 CPU, `PORT=10000`): healthy in 13 s, 51 MB RAM, no restarts. See `DEPLOY_RENDER.md`. |
 | Docker image | **Built and run** | `docker build` (272 MB, non-root UID 10001); also runs inside kind. |
 | Docker Compose stack | **Run** | App, Collector, Jaeger, Prometheus and Grafana all up; app container healthy. |
 | OpenTelemetry (app -> Collector -> Jaeger) | **Verified end to end** | A request's trace ID is found in Jaeger with 10 spans (`verify.sh` check 3), in both Compose and kind. The OTLP wiring is also unit-tested against a local gRPC receiver. |
@@ -20,7 +22,7 @@ Everything below was **run and observed**, not just written. Tested on Windows 1
 | Scenario E (Ansible) and rollback | **Run** | Dry run, real restart, real rollback (original ReplicaSet restored), probe request traced in Jaeger. |
 | `scripts/verify.sh` | **7 of 7 checks PASS, 0 FAIL, 0 SKIP** | Last run against the kind cluster with the final code. |
 
-**Not verified:** the Minikube path (`CLUSTER_TOOL=minikube`), Ansible on a native Windows control node (unsupported by Ansible), macOS, and how the Grafana/Jaeger pages look visually. The timings below are single runs on one laptop, not benchmarks.
+**Not verified:** the Minikube path (`CLUSTER_TOOL=minikube`), Ansible on a native Windows control node (unsupported by Ansible), macOS, how the Grafana/Jaeger pages look visually, and anything on Render itself until it is deployed (in particular that Render overwrites the `True-Client-IP` header, which `DEPLOY_RENDER.md` tests). The timings below are single runs on one laptop, not benchmarks.
 
 `scripts/verify.sh` reports PASS/FAIL/SKIP per check and prints the exact command for every SKIP.
 
@@ -33,6 +35,16 @@ Everything below was **run and observed**, not just written. Tested on Windows 1
 | Prometheus `up` | recorded `up=0` (about one 5 s scrape interval) in both runs | recorded `up=0` in one run; **no failed scrape was captured in the other run** | not observed |
 
 `scripts/run-demo.sh D` queries Prometheus after each stage and reports only what it recorded.
+
+## Unified dashboard and public demo
+
+One URL, six pages served by the same FastAPI app: **Overview, Metrics, Traces, Incidents, Scenarios, Infrastructure** (`/ui/`). Public URL: _to be added after the first Render deployment._
+
+- **Real data, labelled.** Every number is tagged `LIVE` (measured by this running instance), `LIVE · SANDBOX` (real requests in an isolated demo run), `RECORDED` (replayed from a verified local run) or `NOT AVAILABLE`. With no traffic a value says "No data", never 0.
+- **Embedded telemetry, bounded.** Real OpenTelemetry spans (200 traces, 100 spans each, allow-listed attributes) and a one-hour metric history are held in memory; no Jaeger, Prometheus or Grafana is needed for the public version. They remain the full local stack.
+- **Scenarios A-C are live and safe.** They run real requests through the real workflow, with a private fault state per request, one trace per request and an isolated incident detector per run; caps on requests, delay and concurrency; per-client and global rate limits. **D and E are recordings** from verified local runs (Kubernetes pod failure, Ansible recovery) and cannot execute anything.
+- **Public mode** (`TRACEGUARD_PUBLIC_DEMO=true`): global fault injection cannot exist; `/metrics`, `/incidents`, `/console`, `/simulate-failure` and the API docs answer 404; there is no endpoint that runs shell, kubectl or Ansible.
+- **Deploy it free on Render:** see [`DEPLOY_RENDER.md`](DEPLOY_RENDER.md). Run locally: `TRACEGUARD_PUBLIC_DEMO=true uvicorn app.main:app` then open http://127.0.0.1:8000/.
 
 ## Problem
 
