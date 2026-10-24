@@ -20,7 +20,13 @@ post() { curl -fsS -X POST "$BASE$1" -H 'Content-Type: application/json' -d "$2"
 REC='{"user_id":"verify","category":"electronics","budget":250}'
 
 # 1. API responds
-if curl -fsS "$BASE/health" >/dev/null 2>&1 && curl -fsS "$BASE/ready" >/dev/null 2>&1; then
+api_up() { curl -fsS "$BASE/health" >/dev/null 2>&1 && curl -fsS "$BASE/ready" >/dev/null 2>&1; }
+# A pod replacement (for example by the previous run's Ansible step) leaves the supervised port-forward
+# reconnecting for a few seconds. `start` is idempotent and waits for it; it does nothing harmful otherwise.
+if ! api_up && [ -x scripts/port-forward.sh ] && command -v kubectl >/dev/null 2>&1; then
+  scripts/port-forward.sh start traceguard >/dev/null 2>&1
+fi
+if api_up; then
   pass "1. API responds (/health, /ready) at $BASE"
 else
   fail "1. API not reachable at $BASE (start it: README step 1, or scripts/port-forward.sh start)"
@@ -100,9 +106,13 @@ else
     else fail "6. Ansible playbook failed"; fi
     # The restart replaced the pod. A supervised forward reconnects by itself; wait for it so $BASE works again.
     [ -x scripts/port-forward.sh ] && scripts/port-forward.sh start traceguard >/dev/null 2>&1
+    # stdout is the verdict; stderr is kept apart because `kubectl exec` can print harmless websocket warnings
+    # ("Unknown stream id 1, discarding message") that must not turn a correct result into a failure.
+    ERRF=$(mktemp)
     OUT=$(kubectl --context "$CTX" -n "$NS" exec deploy/traceguard -- python -c \
-      "import urllib.request as u,json;r=u.Request('http://localhost:8000/recommend',json.dumps({'user_id':'v','category':'books','budget':100}).encode(),{'Content-Type':'application/json'});print(json.loads(u.urlopen(r).read())['correctness']['correct'])" 2>&1)
-    if [ "$OUT" = "True" ]; then pass "7. service returns a correct result after recovery"; else fail "7. post-recovery request failed: $OUT"; fi
+      "import urllib.request as u,json;r=u.Request('http://localhost:8000/recommend',json.dumps({'user_id':'v','category':'books','budget':100}).encode(),{'Content-Type':'application/json'});print(json.loads(u.urlopen(r).read())['correctness']['correct'])" 2>"$ERRF")
+    if [ "$OUT" = "True" ]; then pass "7. service returns a correct result after recovery"; else fail "7. post-recovery request failed: stdout='$OUT' stderr='$(cat "$ERRF")'"; fi
+    rm -f "$ERRF"
   fi
 fi
 
