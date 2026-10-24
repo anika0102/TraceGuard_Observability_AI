@@ -111,7 +111,9 @@ Open Jaeger http://localhost:16686, Prometheus http://localhost:9090, Grafana ht
 
 ```bash
 scripts/deploy.sh                # creates kind cluster 'traceguard', builds + loads image, deploys app and observability
-scripts/port-forward.sh start    # 8000, 16686, 9090, 3000 on 127.0.0.1
+scripts/port-forward.sh start    # 8000, 16686, 9090, 3000 on 127.0.0.1; detached, survives the launching shell
+scripts/port-forward.sh status   # per service: running/stopped; exit 0 only if every port accepts connections
+scripts/port-forward.sh stop     # kills only the forwards this script started (tracked in .pf/*.pid)
 ```
 
 Minikube: `CLUSTER_TOOL=minikube K8S_CONTEXT=minikube scripts/deploy.sh`. Use `127.0.0.1` rather than `localhost` on Windows to avoid IPv6 fallback delays (measured here: about 2 s per request with `localhost`).
@@ -170,7 +172,7 @@ Grafana panels (live PromQL, nothing hardcoded): request volume, error rate, p50
 - **`ErrImagePull` / `ImagePullBackOff` in kind:** the image must be loaded: `kind load docker-image traceguard:0.1.0 --name traceguard` (deploy.sh does this). The manifest uses `imagePullPolicy: IfNotPresent` and tag `traceguard:0.1.0`.
 - **No traces in Jaeger:** check `docker compose logs otel-collector` (the `debug` exporter logs batches), confirm `OTEL_EXPORTER_OTLP_ENDPOINT=otel-collector:4317` (no `http://` prefix needed for gRPC), and that the app is not run outside Docker with the in-network hostname (use `localhost:4317` then). Batches flush within ~5 s.
 - **Pod never Ready:** `kubectl -n traceguard describe pod -l app=traceguard` (probe events) and `kubectl -n traceguard logs deploy/traceguard`. `not_ready` and `unhealthy` fault scenarios are *meant* to do this.
-- **Port-forward stops working after a pod is replaced:** `scripts/port-forward.sh restart`.
+- **Port-forward stops working after a pod is replaced:** a forward is bound to one pod. `scripts/port-forward.sh status` shows "NOT accepting connections"; fix with `scripts/port-forward.sh restart`. All subcommands are idempotent and never touch port-forwards they did not start.
 - **Ansible on Windows:** use WSL2.
 
 ## Security considerations
