@@ -4,8 +4,7 @@ A small project where I practice observability and recovery on Kubernetes. It's 
 
 **Live demo:** https://traceguard-86lh.onrender.com
 
-## How it fits together
-
+## Architecture
 ```mermaid
 flowchart LR
   user[Browser] --> app["FastAPI app + dashboard"]
