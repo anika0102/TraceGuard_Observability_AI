@@ -56,12 +56,17 @@ def test_user_id_not_stored_raw_in_spans(client, spans):
 
 
 def test_slow_scenario_adds_latency_to_span(client, spans):
-    client.post("/simulate-failure", json={"scenario": "slow", "delay_ms": 300})
+    delay_ms = 300
+    # asyncio timers can fire slightly early relative to perf_counter/span timestamps (about one OS timer
+    # tick, ~15.6 ms on Windows), so require 90% of the delay. A request without the fault takes ~1-8 ms,
+    # so this still fails by a wide margin if the delay is not applied.
+    min_observed_ms = delay_ms * 0.9
+    client.post("/simulate-failure", json={"scenario": "slow", "delay_ms": delay_ms})
     body = client.post("/recommend", json=REQ).json()
-    assert body["latency_ms"] >= 300 and body["fault_scenario"] == "slow"
+    assert body["latency_ms"] >= min_observed_ms and body["fault_scenario"] == "slow"
     lookup = next(s for s in spans.get_finished_spans() if s.name == "recommend.lookup_catalog")
-    assert (lookup.end_time - lookup.start_time) / 1e6 >= 300
-    assert lookup.attributes["traceguard.injected_delay_ms"] == 300
+    assert (lookup.end_time - lookup.start_time) / 1e6 >= min_observed_ms
+    assert lookup.attributes["traceguard.injected_delay_ms"] == delay_ms  # exact configured value
 
 
 def test_error_scenario_returns_500_and_error_span(client, spans):
