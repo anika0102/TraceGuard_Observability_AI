@@ -98,6 +98,8 @@ else
        && ansible-playbook -i ansible/inventory.ini ansible/recover-deployment.yml; then
       pass "6. Ansible dry-run and restart workflow succeeded"
     else fail "6. Ansible playbook failed"; fi
+    # The restart replaced the pod. A supervised forward reconnects by itself; wait for it so $BASE works again.
+    [ -x scripts/port-forward.sh ] && scripts/port-forward.sh start traceguard >/dev/null 2>&1
     OUT=$(kubectl --context "$CTX" -n "$NS" exec deploy/traceguard -- python -c \
       "import urllib.request as u,json;r=u.Request('http://localhost:8000/recommend',json.dumps({'user_id':'v','category':'books','budget':100}).encode(),{'Content-Type':'application/json'});print(json.loads(u.urlopen(r).read())['correctness']['correct'])" 2>&1)
     if [ "$OUT" = "True" ]; then pass "7. service returns a correct result after recovery"; else fail "7. post-recovery request failed: $OUT"; fi

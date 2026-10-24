@@ -60,7 +60,7 @@ scenario_d() {
   "${KC[@]}" wait --for=condition=ready pod -l app=traceguard --timeout=120s
   NEW=$("${KC[@]}" get pod -l app=traceguard -o jsonpath='{.items[0].metadata.name}')
   echo "old pod: $OLD   new pod: $NEW"
-  scripts/port-forward.sh restart traceguard >/dev/null   # a forward is bound to one pod; only the app's is stale
+  scripts/port-forward.sh start traceguard >/dev/null   # supervised forward reconnects to the new pod; this waits for it
   echo "-- request after recovery:"; post /recommend "$REC" | "$PY" -c "import sys,json;d=json.load(sys.stdin);print('correct =',d['correctness']['correct'],' trace_id =',d['trace_id'])"
   report_prometheus "D2 pod delete" "$T2"
   echo "Note: while no pod is Ready the app cannot emit metrics or traces; Jaeger and Prometheus are separate pods,"
@@ -79,7 +79,7 @@ scenario_e() {
   ansible-playbook -i ansible/inventory.ini ansible/recover-deployment.yml --check
   echo "-- real run"
   ansible-playbook -i ansible/inventory.ini ansible/recover-deployment.yml
-  scripts/port-forward.sh restart traceguard >/dev/null
+  scripts/port-forward.sh start traceguard >/dev/null   # the restart replaced the pod; wait for the forward to reconnect
   echo "-- after recovery (fault state was in-memory, so the restart cleared it):"
   post /recommend "$REC" | "$PY" -c "import sys,json;d=json.load(sys.stdin);print('correct =',d['correctness']['correct'])"
 }

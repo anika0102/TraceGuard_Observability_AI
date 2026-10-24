@@ -28,6 +28,8 @@ FAKE_KUBECTL = textwrap.dedent(f"""\
     if "port-forward" not in args:
         sys.exit(0)
     local = int(args[-1].split(":")[0])
+    if os.environ.get("FAKE_EXIT_NOW"):
+        sys.exit(1)  # like kubectl failing instantly (bad service name, cluster gone)
     signal.signal(signal.SIGTERM, lambda *a: sys.exit(0))
     if not os.environ.get("FAKE_NO_LISTEN"):
         s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -58,6 +60,31 @@ def alive(pid):
         return False
 
 
+def children_of(pid):
+    """PIDs whose parent is `pid` (the supervisor's kubectl child), from /proc."""
+    kids = []
+    for entry in Path("/proc").iterdir():
+        if entry.name.isdigit():
+            try:
+                if int((entry / "stat").read_text().rsplit(")", 1)[1].split()[1]) == pid:
+                    kids.append(int(entry.name))
+            except (FileNotFoundError, ProcessLookupError, IndexError, ValueError):
+                pass
+    return kids
+
+
+def kubectl_children(pid):
+    """Children of the supervisor that are the (fake) kubectl tunnel, not the sleep used between respawns."""
+    out = []
+    for kid in children_of(pid):
+        try:
+            if b"kubectl" in Path(f"/proc/{kid}/cmdline").read_bytes():
+                out.append(kid)
+        except FileNotFoundError:
+            pass
+    return out
+
+
 def port_open(port):
     with socket.socket() as s:
         s.settimeout(0.5)
@@ -86,6 +113,7 @@ class Env:
 
     def env(self):
         e = {**os.environ, "PATH": f"{self.bin}:{os.environ['PATH']}", "PF_PIDDIR": str(self.pids),
+             "PF_RESPAWN_DELAY": "0.3",
              "PF_SERVICES": " ".join(f"{s}:{p}:{p}" for s, p in self.ports.items()),
              "K8S_CONTEXT": "kind-test", "K8S_NAMESPACE": "tg-test"}
         e.update(self.extra)
@@ -248,6 +276,85 @@ def test_status_single_service(pf):
     assert pf.run("status traceguard").returncode == 0
     assert pf.run("status prometheus").returncode == 1
     assert pf.run("status").returncode == 1  # overall status still fails while one is down
+
+
+def test_forward_reconnects_by_itself_when_the_pod_behind_it_is_replaced(pf):
+    """A plain kubectl port-forward exits with 'lost connection to pod' after a rollout; ours must come back."""
+    pf.ports = {"traceguard": pf.ports["traceguard"]}
+    pf.run("start")
+    supervisor = pf.pid("traceguard")
+    (old_child,) = kubectl_children(supervisor)
+    os.kill(old_child, signal.SIGKILL)  # what a replaced pod does to the tunnel
+    assert wait_for(lambda: any(k != old_child for k in kubectl_children(supervisor)), 10), "no new tunnel"
+    assert wait_for(lambda: port_open(pf.ports["traceguard"]))
+    assert pf.pid("traceguard") == supervisor and alive(supervisor)  # same tracked supervisor, new tunnel
+    assert pf.run("status traceguard").returncode == 0
+
+
+def test_stop_leaves_no_orphaned_kubectl_behind(pf):
+    pf.ports = {"traceguard": pf.ports["traceguard"]}
+    pf.run("start")
+    supervisor = pf.pid("traceguard")
+    kids = kubectl_children(supervisor)
+    assert kids
+    pf.run("stop")
+    assert wait_for(lambda: not alive(supervisor) and not any(alive(k) for k in kids))
+    assert not port_open(pf.ports["traceguard"])
+
+
+def test_supervisor_gives_up_after_repeated_instant_failures(pf):
+    pf.ports = {"traceguard": pf.ports["traceguard"]}
+    pf.extra.update({"FAKE_EXIT_NOW": "1", "PF_MAX_QUICK_FAILURES": "3"})
+    out = pf.run("start")
+    assert out.returncode != 0 and "FAILED" in out.stderr
+    assert not (pf.pids / "traceguard.pid").exists()
+
+
+def test_supervisor_exits_when_its_pid_file_lease_is_gone(pf):
+    pf.ports = {"traceguard": pf.ports["traceguard"]}
+    pf.run("start")
+    supervisor = pf.pid("traceguard")
+    (pf.pids / "traceguard.pid").unlink()           # someone removed the lease...
+    for child in children_of(supervisor):
+        os.kill(child, signal.SIGKILL)               # ...and the tunnel then drops
+    assert wait_for(lambda: not alive(supervisor), 10), "orphaned supervisor kept running without a lease"
+    assert wait_for(lambda: not port_open(pf.ports["traceguard"]), 5)
+
+
+def test_start_waits_for_a_reconnecting_forward_instead_of_failing(pf):
+    pf.ports = {"traceguard": pf.ports["traceguard"]}
+    pf.run("start")
+    supervisor = pf.pid("traceguard")
+    for child in children_of(supervisor):
+        os.kill(child, signal.SIGKILL)
+    out = pf.run("start traceguard")
+    assert out.returncode == 0 and ("reconnected" in out.stdout or "already running" in out.stdout), out.stdout
+    assert pf.pid("traceguard") == supervisor
+
+
+def run_proc_cmd(proc_dir, pid):
+    code = f'source "{SCRIPT}"; proc_cmd {pid}; echo "rc=$?"'
+    return subprocess.run(["bash", "-c", code], env={**os.environ, "PF_PROC_DIR": str(proc_dir)},
+                          capture_output=True, text=True, timeout=30)
+
+
+def test_proc_cmd_is_silent_when_the_process_is_gone(tmp_path):
+    out = run_proc_cmd(tmp_path, 4242)  # no such pid directory: the exited-during-read race
+    assert out.stdout.strip() == "rc=0" and out.stderr == ""
+
+
+def test_proc_cmd_returns_the_command_line(tmp_path):
+    (tmp_path / "77").mkdir()
+    (tmp_path / "77" / "cmdline").write_bytes(b"kubectl\0port-forward\0svc/x\0")
+    out = run_proc_cmd(tmp_path, 77)
+    assert out.stdout.startswith("kubectl port-forward svc/x") and out.stderr == ""
+
+
+def test_proc_cmd_does_not_hide_unexpected_errors(tmp_path):
+    (tmp_path / "88" / "cmdline").mkdir(parents=True)  # exists but cannot be read as a file: a REAL problem
+    out = run_proc_cmd(tmp_path, 88)
+    assert "unexpected error reading" in out.stderr and "88/cmdline" in out.stderr
+    assert out.stdout.strip() == "rc=0"
 
 
 @pytest.mark.parametrize("cmd", ["start", "stop", "restart", "status"])
