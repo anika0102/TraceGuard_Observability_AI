@@ -10,7 +10,8 @@ Everything below was **run and observed**, not just written. Tested on Windows 1
 |---|---|---|
 | Automated tests | **237 passed, 0 skipped** | App/telemetry/incident/OTLP, `port-forward.sh` (fake kubectl), Ansible guardrails (fake kubectl), dashboard backend (trace store, metric history, sandbox isolation, API, rate limits), public-mode security, static-UI safety rules, Render configuration. Run in a `python:3.12` container with ansible-core installed. |
 | Unified dashboard | **Verified in a real browser** (Edge): six pages render with no console errors or CSP violations; interactions work. Mobile overflow found and fixed. | Rendering was checked against the app running in the kind cluster, not yet against Render. |
-| Render deployment | **Rehearsed locally, not yet deployed** | The real image ran under Render's free limits (512 MB, 0.1 CPU, `PORT=10000`): healthy in 13 s, 51 MB RAM, no restarts. See `DEPLOY_RENDER.md`. |
+| Render deployment | **Deployed and verified live** (2026-10-24, free plan) at https://traceguard-86lh.onrender.com | End-to-end check of the live URL: all six pages and assets, health/ready, real metrics and traces, scenarios A-C detected as expected, D-E served as RECORDED and not executable, every operator route (`/metrics`, `/incidents`, `/console`, `/simulate-failure`, docs, `.env`, `.git`) 404, security headers, valid TLS with HTTP redirected to HTTPS, malformed input answered with 422, and a browser pass with no console errors or CSP violations. Locally the same image ran under Render's limits (512 MB, 0.1 CPU) using about 51 MB RAM. See `DEPLOY_RENDER.md`. |
+| Rate limiting on Render | **Verified** | 14 scenario runs with a different forged `True-Client-IP` each returned 10 x 200 then 429, so Render overwrites that header and the per-client limit holds (global ceilings sit behind it). |
 | Docker image | **Built and run** | `docker build` (272 MB, non-root UID 10001); also runs inside kind. |
 | Docker Compose stack | **Run** | App, Collector, Jaeger, Prometheus and Grafana all up; app container healthy. |
 | OpenTelemetry (app -> Collector -> Jaeger) | **Verified end to end** | A request's trace ID is found in Jaeger with 10 spans (`verify.sh` check 3), in both Compose and kind. The OTLP wiring is also unit-tested against a local gRPC receiver. |
@@ -22,7 +23,7 @@ Everything below was **run and observed**, not just written. Tested on Windows 1
 | Scenario E (Ansible) and rollback | **Run** | Dry run, real restart, real rollback (original ReplicaSet restored), probe request traced in Jaeger. |
 | `scripts/verify.sh` | **7 of 7 checks PASS, 0 FAIL, 0 SKIP** | Last run against the kind cluster with the final code. |
 
-**Not verified:** the Minikube path (`CLUSTER_TOOL=minikube`), Ansible on a native Windows control node (unsupported by Ansible), macOS, how the Grafana/Jaeger pages look visually, and anything on Render itself until it is deployed (in particular that Render overwrites the `True-Client-IP` header, which `DEPLOY_RENDER.md` tests). The timings below are single runs on one laptop, not benchmarks.
+**Not verified:** the Minikube path (`CLUSTER_TOOL=minikube`), Ansible on a native Windows control node (unsupported by Ansible), macOS, how the Grafana/Jaeger pages look visually, and the Render cold-start time (the instance was already awake during verification; expect about a minute after 15 idle minutes). The timings below are single runs on one laptop, not benchmarks.
 
 `scripts/verify.sh` reports PASS/FAIL/SKIP per check and prints the exact command for every SKIP.
 
@@ -38,7 +39,7 @@ Everything below was **run and observed**, not just written. Tested on Windows 1
 
 ## Unified dashboard and public demo
 
-One URL, six pages served by the same FastAPI app: **Overview, Metrics, Traces, Incidents, Scenarios, Infrastructure** (`/ui/`). Public URL: _to be added after the first Render deployment._
+One URL, six pages served by the same FastAPI app: **Overview, Metrics, Traces, Incidents, Scenarios, Infrastructure** (`/ui/`). **Public URL: https://traceguard-86lh.onrender.com** (free Render instance: it sleeps after 15 minutes idle, so the first visit after a quiet period can take about a minute).
 
 - **Real data, labelled.** Every number is tagged `LIVE` (measured by this running instance), `LIVE · SANDBOX` (real requests in an isolated demo run), `RECORDED` (replayed from a verified local run) or `NOT AVAILABLE`. With no traffic a value says "No data", never 0.
 - **Embedded telemetry, bounded.** Real OpenTelemetry spans (200 traces, 100 spans each, allow-listed attributes) and a one-hour metric history are held in memory; no Jaeger, Prometheus or Grafana is needed for the public version. They remain the full local stack.
