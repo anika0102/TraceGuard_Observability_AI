@@ -3,7 +3,7 @@
   "title": "Kubernetes pod failure and recovery",
   "source": "recorded",
   "recorded_at": "2026-10-24T08:29:41+00:00",
-  "git_commit": "71a9946",
+  "git_commit": "d34d675",
   "environment": {
     "cluster": "kind (single node), Kubernetes v1.32.2",
     "kind": "kind v0.27.0",
