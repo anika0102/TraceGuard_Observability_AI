@@ -74,6 +74,8 @@ def create_app(settings: Optional[Settings] = None, extra_span_exporters=()) -> 
     app.state.history = MetricsHistory(settings.history_max_points, settings.history_interval_s)
     app.state.api_limiter = RateLimiter(settings.rate_limit_api_per_min)
     app.state.run_limiter = RateLimiter(settings.rate_limit_runs_per_min)
+    app.state.api_global = RateLimiter(settings.rate_limit_api_global_per_min)
+    app.state.run_global = RateLimiter(settings.rate_limit_runs_global_per_min)
     faults: FaultState = app.state.faults
     detector: IncidentDetector = app.state.detector
 
@@ -140,6 +142,8 @@ def create_app(settings: Optional[Settings] = None, extra_span_exporters=()) -> 
     async def recommend(req: RecommendRequest, request: Request):
         if settings.public_demo:  # a public endpoint must not be a free CPU meter: rate-limit it per client
             allowed, retry = app.state.api_limiter.allow(client_key(request, settings.client_ip_header))
+            if allowed:  # the global bucket is only charged for requests the per-client limit let through
+                allowed, retry = app.state.api_global.allow("*")
             if not allowed:
                 return JSONResponse({"error": "rate_limited", "detail": "too many requests; slow down"}, 429,
                                     headers={"Retry-After": str(int(retry) + 1)})

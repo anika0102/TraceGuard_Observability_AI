@@ -41,6 +41,9 @@ class Settings:
     sandbox_max_concurrent_runs: int = 2
     rate_limit_runs_per_min: int = 10
     rate_limit_api_per_min: int = 240
+    # Ceilings across ALL clients: even if the per-client key were spoofable, total load stays bounded.
+    rate_limit_runs_global_per_min: int = 60
+    rate_limit_api_global_per_min: int = 1200
     # Name of the ONE request header that carries the real client IP (for Render: "True-Client-IP"), set by a proxy
     # that overwrites it. Empty (default) = trust nothing and key rate limits on the socket peer. Never point this
     # at X-Forwarded-For: clients can pre-fill it.

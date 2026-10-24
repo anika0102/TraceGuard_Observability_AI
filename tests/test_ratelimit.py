@@ -104,6 +104,31 @@ def test_garbage_in_the_configured_header_cannot_be_used_to_dodge_the_limit():
         assert r.status_code == 429, f"junk header value {junk!r} bypassed the limit"
 
 
+def test_global_ceiling_holds_even_when_every_request_claims_a_new_client_ip():
+    """Defence in depth: if the proxy header were spoofable, unlimited fake clients must still hit a total cap."""
+    c = build_client(rate_limit_runs_per_min=100, rate_limit_runs_global_per_min=5, client_ip_header="True-Client-IP")
+    codes = [c.post("/api/scenarios/A/run", json={"requests": 1}, headers={"True-Client-IP": f"198.51.100.{i}"}).status_code
+             for i in range(9)]
+    assert codes == [200] * 5 + [429] * 4
+    api = build_client(rate_limit_api_per_min=100, rate_limit_api_global_per_min=3, client_ip_header="True-Client-IP")
+    assert [api.get("/api/meta", headers={"True-Client-IP": f"203.0.113.{i}"}).status_code for i in range(5)] == [200, 200, 200, 429, 429]
+
+
+def test_one_abusive_client_cannot_drain_the_global_budget_for_everyone_else():
+    c = build_client(rate_limit_runs_per_min=2, rate_limit_runs_global_per_min=4, client_ip_header="True-Client-IP")
+    flood = [c.post("/api/scenarios/A/run", json={"requests": 1}, headers={"True-Client-IP": "198.51.100.1"}).status_code for _ in range(20)]
+    assert flood.count(200) == 2                      # blocked by its own limit; only 2 global tokens were spent
+    others = [c.post("/api/scenarios/A/run", json={"requests": 1}, headers={"True-Client-IP": f"198.51.100.{i}"}).status_code for i in (2, 3)]
+    assert others == [200, 200]
+
+
+def test_public_recommend_also_honours_the_global_ceiling():
+    c = build_client(public_demo=True, rate_limit_api_per_min=100, rate_limit_api_global_per_min=2, client_ip_header="True-Client-IP")
+    body = {"user_id": "u", "category": "books", "budget": 100}
+    codes = [c.post("/recommend", json=body, headers={"True-Client-IP": f"198.51.100.{i}"}).status_code for i in range(4)]
+    assert codes == [200, 200, 429, 429]
+
+
 def test_read_api_is_rate_limited_too():
     c = build_client(rate_limit_api_per_min=3)
     assert [c.get("/api/meta").status_code for _ in range(3)] == [200, 200, 200]

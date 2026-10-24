@@ -41,8 +41,11 @@ def _state(request: Request):
 def _limit(kind: str):
     def dep(request: Request):
         st = _state(request)
-        limiter: RateLimiter = st.run_limiter if kind == "run" else st.api_limiter
-        ok, retry = limiter.allow(client_key(request, st.settings.client_ip_header))
+        per_client: RateLimiter = st.run_limiter if kind == "run" else st.api_limiter
+        overall: RateLimiter = st.run_global if kind == "run" else st.api_global
+        ok, retry = per_client.allow(client_key(request, st.settings.client_ip_header))
+        if ok:  # only charge the global ceiling for requests the per-client limit allowed
+            ok, retry = overall.allow("*")
         if not ok:
             raise HTTPException(429, "rate limit exceeded", headers={"Retry-After": str(int(retry) + 1)})
     return dep
