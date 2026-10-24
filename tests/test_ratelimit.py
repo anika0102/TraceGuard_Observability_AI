@@ -49,16 +49,28 @@ def request(headers=None, host="203.0.113.7"):
     return SimpleNamespace(headers={k.lower(): v for k, v in (headers or {}).items()}, client=SimpleNamespace(host=host))
 
 
-def test_proxy_headers_are_ignored_unless_explicitly_trusted():
-    spoof = request({"CF-Connecting-IP": "198.51.100.1", "X-Forwarded-For": "198.51.100.2"})
-    assert client_key(spoof, trust_proxy_headers=False) == "203.0.113.7"
+def test_no_header_is_trusted_by_default():
+    spoof = request({"True-Client-IP": "198.51.100.1", "CF-Connecting-IP": "198.51.100.3", "X-Forwarded-For": "198.51.100.2"})
+    assert client_key(spoof) == "203.0.113.7" and client_key(spoof, "") == "203.0.113.7"
 
 
-def test_trusted_proxy_headers_must_be_valid_ips():
-    assert client_key(request({"CF-Connecting-IP": "198.51.100.1"}), True) == "198.51.100.1"
-    assert client_key(request({"X-Forwarded-For": "198.51.100.2, 10.0.0.1"}), True) == "198.51.100.2"
-    assert client_key(request({"CF-Connecting-IP": "not-an-ip; DROP TABLE"}), True) == "203.0.113.7"
-    assert client_key(request({"CF-Connecting-IP": "2001:db8::1"}), True) == "2001:db8::1"
+def test_only_the_one_configured_header_is_used_and_it_must_be_a_single_valid_ip():
+    configured = "True-Client-IP"
+    assert client_key(request({"True-Client-IP": "198.51.100.1"}), configured) == "198.51.100.1"
+    assert client_key(request({"true-client-ip": "2001:db8::1"}), configured) == "2001:db8::1"
+    # other forwarding headers stay ignored even when one header is configured
+    assert client_key(request({"CF-Connecting-IP": "198.51.100.3", "X-Forwarded-For": "198.51.100.2"}), configured) == "203.0.113.7"
+
+
+@pytest.mark.parametrize("value", ["not-an-ip; DROP TABLE", "198.51.100.1, 10.0.0.1", "", "999.1.1.1", "1.2.3.4:80", " "])
+def test_bad_or_list_values_fail_closed_to_the_socket_peer(value):
+    """A malformed header must never mint a fresh bucket for the sender (that would defeat rate limiting)."""
+    assert client_key(request({"True-Client-IP": value}), "True-Client-IP") == "203.0.113.7"
+    assert client_key(request({"X-Forwarded-For": value}), "X-Forwarded-For") == "203.0.113.7"
+
+
+def test_a_configured_header_that_is_missing_falls_back_to_the_peer():
+    assert client_key(request({}), "True-Client-IP") == "203.0.113.7"
 
 
 def test_run_endpoint_is_rate_limited_per_client():
@@ -75,6 +87,21 @@ def test_spoofed_forwarding_headers_do_not_bypass_the_limit_by_default():
     for i in range(3):
         r = c.post("/api/scenarios/A/run", json={"requests": 1}, headers={"X-Forwarded-For": f"198.51.100.{i}", "CF-Connecting-IP": f"192.0.2.{i}"})
         assert r.status_code == 429
+
+
+def test_configured_header_gives_each_real_client_its_own_bucket():
+    c = build_client(rate_limit_runs_per_min=1, client_ip_header="True-Client-IP")
+    assert c.post("/api/scenarios/A/run", json={"requests": 1}, headers={"True-Client-IP": "198.51.100.1"}).status_code == 200
+    assert c.post("/api/scenarios/A/run", json={"requests": 1}, headers={"True-Client-IP": "198.51.100.1"}).status_code == 429
+    assert c.post("/api/scenarios/A/run", json={"requests": 1}, headers={"True-Client-IP": "198.51.100.2"}).status_code == 200
+
+
+def test_garbage_in_the_configured_header_cannot_be_used_to_dodge_the_limit():
+    c = build_client(rate_limit_runs_per_min=1, client_ip_header="True-Client-IP")
+    assert c.post("/api/scenarios/A/run", json={"requests": 1}).status_code == 200
+    for junk in ("x", "1.1.1.1, 2.2.2.2", "", "300.1.1.1"):
+        r = c.post("/api/scenarios/A/run", json={"requests": 1}, headers={"True-Client-IP": junk})
+        assert r.status_code == 429, f"junk header value {junk!r} bypassed the limit"
 
 
 def test_read_api_is_rate_limited_too():

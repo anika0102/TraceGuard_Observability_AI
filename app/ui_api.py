@@ -42,7 +42,7 @@ def _limit(kind: str):
     def dep(request: Request):
         st = _state(request)
         limiter: RateLimiter = st.run_limiter if kind == "run" else st.api_limiter
-        ok, retry = limiter.allow(client_key(request, st.settings.trust_proxy_headers))
+        ok, retry = limiter.allow(client_key(request, st.settings.client_ip_header))
         if not ok:
             raise HTTPException(429, "rate limit exceeded", headers={"Retry-After": str(int(retry) + 1)})
     return dep

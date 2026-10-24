@@ -41,8 +41,10 @@ class Settings:
     sandbox_max_concurrent_runs: int = 2
     rate_limit_runs_per_min: int = 10
     rate_limit_api_per_min: int = 240
-    # Only trust CF-Connecting-IP / X-Forwarded-For when deployed behind a proxy you control.
-    trust_proxy_headers: bool = False
+    # Name of the ONE request header that carries the real client IP (for Render: "True-Client-IP"), set by a proxy
+    # that overwrites it. Empty (default) = trust nothing and key rate limits on the socket peer. Never point this
+    # at X-Forwarded-For: clients can pre-fill it.
+    client_ip_header: str = ""
 
     @property
     def fault_injection_allowed(self) -> bool:
@@ -72,5 +74,5 @@ class Settings:
             trace_store_max_traces=int(os.getenv("TRACE_STORE_MAX_TRACES", cls.trace_store_max_traces)),
             rate_limit_runs_per_min=int(os.getenv("RATE_LIMIT_RUNS_PER_MIN", cls.rate_limit_runs_per_min)),
             rate_limit_api_per_min=int(os.getenv("RATE_LIMIT_API_PER_MIN", cls.rate_limit_api_per_min)),
-            trust_proxy_headers=_bool("TRUST_PROXY_HEADERS", False),
+            client_ip_header=os.getenv("CLIENT_IP_HEADER", "").strip(),
         )

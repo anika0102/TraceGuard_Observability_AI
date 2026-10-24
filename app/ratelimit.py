@@ -46,14 +46,15 @@ def _valid_ip(value: Optional[str]) -> Optional[str]:
         return None
 
 
-def client_key(request: Request, trust_proxy_headers: bool) -> str:
-    """Identify the caller. Proxy headers are client-controlled unless a proxy you run sets them, so they are
-    ignored by default; when trusted, only a syntactically valid IP is accepted."""
-    if trust_proxy_headers:
-        ip = _valid_ip(request.headers.get("cf-connecting-ip"))
-        if ip is None:
-            forwarded = request.headers.get("x-forwarded-for", "")
-            ip = _valid_ip(forwarded.split(",")[0]) if forwarded else None
+def client_key(request: Request, client_ip_header: str = "") -> str:
+    """Identify the caller for rate limiting.
+
+    By default nothing in the request is trusted: the key is the socket peer. Only when a deployment names ONE
+    header that its proxy overwrites with the real client IP (Render: True-Client-IP) is that header used, and
+    only if it holds a single valid IP. Anything else (missing, malformed, a list such as a client-prefilled
+    X-Forwarded-For) falls back to the peer, so a bad value can never mint a fresh bucket for an attacker."""
+    if client_ip_header:
+        ip = _valid_ip(request.headers.get(client_ip_header.lower()))
         if ip:
             return ip
     return request.client.host if request.client else "unknown"

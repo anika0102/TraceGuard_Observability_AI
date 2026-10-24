@@ -23,13 +23,16 @@ from .faults import FaultState
 from .incident_detection import INCIDENT_TYPES, IncidentDetector, Sample
 from .metrics_history import MetricsHistory
 from .pipeline import RecommendPipeline, record_request_metric
-from .ratelimit import RateLimiter
+from .ratelimit import RateLimiter, client_key
 from .sandbox import SandboxRunner
 from .schemas import FaultRequest, RecommendRequest, RecommendResponse, Scenario
 
 log = logging.getLogger("traceguard.app")
 
 UI_DIR = Path(__file__).parent / "ui"
+# Operator/diagnostic endpoints. In public demo mode they answer 404 as if they did not exist; /health and /ready
+# stay (platform health checks), and the dashboard talks only to /api/*.
+PUBLIC_HIDDEN_PATHS = {"/metrics", "/incidents", "/console", "/simulate-failure"}
 # Strict CSP for the dashboard: only same-origin scripts/styles/fetches, no inline code, no framing.
 UI_CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; "
           "font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
@@ -59,7 +62,9 @@ def create_app(settings: Optional[Settings] = None, extra_span_exporters=()) -> 
             with contextlib.suppress(asyncio.CancelledError):
                 await task
 
-    app = FastAPI(title="TraceGuard", version=settings.service_version, lifespan=lifespan)
+    # Public demo: no auto-generated API docs/schema either (they list every route for no benefit to visitors).
+    docs = {} if not settings.public_demo else {"docs_url": None, "redoc_url": None, "openapi_url": None}
+    app = FastAPI(title="TraceGuard", version=settings.service_version, lifespan=lifespan, **docs)
     app.state.settings = settings
     app.state.faults = FaultState()
     app.state.detector = IncidentDetector(settings)
@@ -132,7 +137,12 @@ def create_app(settings: Optional[Settings] = None, extra_span_exporters=()) -> 
 
     # -- business endpoint ---------------------------------------------------------------
     @app.post("/recommend", response_model=RecommendResponse)
-    async def recommend(req: RecommendRequest):
+    async def recommend(req: RecommendRequest, request: Request):
+        if settings.public_demo:  # a public endpoint must not be a free CPU meter: rate-limit it per client
+            allowed, retry = app.state.api_limiter.allow(client_key(request, settings.client_ip_header))
+            if not allowed:
+                return JSONResponse({"error": "rate_limited", "detail": "too many requests; slow down"}, 429,
+                                    headers={"Retry-After": str(int(retry) + 1)})
         # App-wide fault state (local development only; empty/"none" in public demo mode).
         outcome = await pipeline.run(req, faults, trace.get_current_span())
         result = JSONResponse(outcome.content, outcome.status_code)
@@ -186,6 +196,13 @@ def create_app(settings: Optional[Settings] = None, extra_span_exporters=()) -> 
     @app.get("/console", response_class=HTMLResponse)
     def console():
         return CONSOLE_HTML
+
+    # -- public demo: operator/diagnostic routes do not exist ----------------------------------
+    @app.middleware("http")
+    async def hide_operator_routes(request: Request, call_next):
+        if settings.public_demo and request.url.path.rstrip("/") in PUBLIC_HIDDEN_PATHS:
+            return JSONResponse({"detail": "Not Found"}, status_code=404)
+        return await call_next(request)
 
     # -- unified dashboard (UI shell + JSON API) -------------------------------------------
     @app.middleware("http")
