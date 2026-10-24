@@ -1,54 +1,46 @@
 ---
-# Controlled, operator-triggered recovery of the TraceGuard test deployment.
+# Controlled, operator-triggered recovery of the TraceGuard test deployment on the local kind cluster.
 #
 #   ansible-playbook -i ansible/inventory.ini ansible/recover-deployment.yml                  # restart
 #   ansible-playbook -i ansible/inventory.ini ansible/recover-deployment.yml --check          # dry run
 #   ansible-playbook -i ansible/inventory.ini ansible/recover-deployment.yml -e recovery_action=rollback
 #
-# Safety: namespace, deployment and kubectl context are checked against allow-lists before anything
-# happens, and every kubectl call is pinned to --context and --namespace. Nothing cluster-wide is touched.
+# SAFETY MODEL (enforced in the playbook text itself, not in overridable variables):
+#   * Extra-vars (-e) always beat playbook variables, so nothing safety-relevant is a variable:
+#     the allowed values are LITERALS inside the assert below, and every kubectl call hard-codes
+#     `--context kind-traceguard --namespace traceguard` and `deployment/traceguard`.
+#   * The requested values (recovery_action, k8s_*) are only compared against those literals; a request for
+#     anything else is refused before any kubectl call is made.
+#   * The in-pod probe is loaded from files/probe.py by a literal path, so `-e` cannot inject code into the pod.
+#   * This is a guardrail for operators and automation, not a privilege boundary: whoever can edit this file or
+#     run kubectl directly can already do more. To support another cluster, change the literals deliberately.
 - name: TraceGuard controlled recovery
   hosts: local
   gather_facts: false
   vars:
     recovery_action: restart            # restart | rollback
-    k8s_namespace: traceguard
+    k8s_namespace: traceguard           # requested target, validated against literals below
     k8s_deployment: traceguard
     k8s_context: kind-traceguard
     rollout_timeout: 180s
-    allowed_actions: [restart, rollback]
-    allowed_namespaces: [traceguard]
-    allowed_deployments: [traceguard]
-    allowed_contexts: [kind-traceguard, minikube]
-    kubectl: [kubectl, "--context", "{{ k8s_context }}", "--namespace", "{{ k8s_namespace }}"]
-    # In-pod probe: avoids depending on a port-forward (which dies when the pod is replaced).
-    probe_py: |
-      import json, urllib.request
-      def call(path, body=None):
-          req = urllib.request.Request("http://localhost:8000" + path,
-                                       data=json.dumps(body).encode() if body else None,
-                                       headers={"Content-Type": "application/json"})
-          with urllib.request.urlopen(req, timeout=5) as r:
-              return r.status, json.loads(r.read())
-      rs, ready = call("/ready")
-      ps, rec = call("/recommend", {"user_id": "ansible-probe", "category": "electronics", "budget": 250})
-      print(json.dumps({"ready": ready["status"], "http_status": ps, "correct": rec["correctness"]["correct"],
-                        "sku": (rec["recommendation"] or {}).get("sku"), "trace_id": rec["trace_id"]}))
 
   tasks:
     - name: Recovery workflow
       block:
         # 1. Validate the request before touching anything.
-        - name: Validate action, namespace, deployment and kubectl context against allow-lists
+        - name: Validate action, namespace, deployment, context and timeout against literal allow-lists
           ansible.builtin.assert:
             that:
-              - recovery_action in allowed_actions
-              - k8s_namespace in allowed_namespaces
-              - k8s_deployment in allowed_deployments
-              - k8s_context in allowed_contexts
+              - recovery_action in ['restart', 'rollback']
+              - k8s_namespace == 'traceguard'
+              - k8s_deployment == 'traceguard'
+              - k8s_context == 'kind-traceguard'
+              - rollout_timeout is match('^[0-9]{1,4}s$')
             fail_msg: >-
               Refusing to run: action={{ recovery_action }}, namespace={{ k8s_namespace }},
-              deployment={{ k8s_deployment }}, context={{ k8s_context }} is not on the allow-list.
+              deployment={{ k8s_deployment }}, context={{ k8s_context }}, timeout={{ rollout_timeout }}
+              is not permitted. This playbook only operates on deployment traceguard in namespace
+              traceguard of context kind-traceguard (actions: restart, rollback).
             quiet: true
 
         - name: Confirm kubectl is installed
@@ -59,7 +51,7 @@
         # 2. Check current state (read-only, so it also runs in --check mode).
         - name: Read current deployment status
           ansible.builtin.command:
-            argv: "{{ kubectl + ['get', 'deployment', k8s_deployment, '-o', 'json'] }}"
+            argv: [kubectl, --context, kind-traceguard, --namespace, traceguard, get, deployment, traceguard, -o, json]
           register: dep_raw
           changed_when: false
           check_mode: false
@@ -72,7 +64,18 @@
 
         - name: Probe application health before recovery (failure is informational)
           ansible.builtin.command:
-            argv: "{{ kubectl + ['exec', 'deploy/' + k8s_deployment, '--', 'python', '-c', probe_py] }}"
+            argv:
+              - kubectl
+              - --context
+              - kind-traceguard
+              - --namespace
+              - traceguard
+              - exec
+              - deploy/traceguard
+              - --
+              - python
+              - -c
+              - "{{ lookup('file', 'probe.py') }}"
           register: pre_probe
           failed_when: false
           changed_when: false
@@ -83,33 +86,42 @@
           block:
             - name: Read rollout history
               ansible.builtin.command:
-                argv: "{{ kubectl + ['rollout', 'history', 'deployment/' + k8s_deployment] }}"
+                argv: [kubectl, --context, kind-traceguard, --namespace, traceguard, rollout, history, deployment/traceguard]
               register: history
               changed_when: false
               check_mode: false
             - name: Require a previous revision
               ansible.builtin.assert:
                 that: (history.stdout_lines | select('match', '^[0-9]+') | list | length) >= 2
-                fail_msg: "No previous revision to roll back to. Use recovery_action=restart."
+                fail_msg: "No previous revision to roll back to. Use recovery_action=restart"
                 quiet: true
 
         # 3. Perform the recovery (skipped in --check mode).
         - name: Rollout restart (recreates pods with a rolling update)
           ansible.builtin.command:
-            argv: "{{ kubectl + ['rollout', 'restart', 'deployment/' + k8s_deployment] }}"
+            argv: [kubectl, --context, kind-traceguard, --namespace, traceguard, rollout, restart, deployment/traceguard]
           when: recovery_action == 'restart'
           register: action_result
 
         - name: Rollout undo (revert to the previous revision)
           ansible.builtin.command:
-            argv: "{{ kubectl + ['rollout', 'undo', 'deployment/' + k8s_deployment] }}"
+            argv: [kubectl, --context, kind-traceguard, --namespace, traceguard, rollout, undo, deployment/traceguard]
           when: recovery_action == 'rollback'
           register: action_result
 
         # 4. Wait for the rollout.
         - name: Wait for rollout to complete
           ansible.builtin.command:
-            argv: "{{ kubectl + ['rollout', 'status', 'deployment/' + k8s_deployment, '--timeout=' + rollout_timeout] }}"
+            argv:
+              - kubectl
+              - --context
+              - kind-traceguard
+              - --namespace
+              - traceguard
+              - rollout
+              - status
+              - deployment/traceguard
+              - "--timeout={{ rollout_timeout }}"
           register: rollout
           changed_when: false
           when: not ansible_check_mode
@@ -117,7 +129,18 @@
         # 5. Verify readiness and a real request.
         - name: Probe readiness and send a test /recommend request
           ansible.builtin.command:
-            argv: "{{ kubectl + ['exec', 'deploy/' + k8s_deployment, '--', 'python', '-c', probe_py] }}"
+            argv:
+              - kubectl
+              - --context
+              - kind-traceguard
+              - --namespace
+              - traceguard
+              - exec
+              - deploy/traceguard
+              - --
+              - python
+              - -c
+              - "{{ lookup('file', 'probe.py') }}"
           register: post_probe
           retries: 12
           delay: 5
@@ -145,15 +168,15 @@
           ansible.builtin.debug:
             msg:
               - "RESULT: {{ 'DRY RUN (no changes made)' if ansible_check_mode else 'SUCCESS' }}"
-              - "action={{ recovery_action }} deployment={{ k8s_namespace }}/{{ k8s_deployment }} context={{ k8s_context }}"
+              - "action={{ recovery_action }} deployment=traceguard/traceguard context=kind-traceguard"
               - "before: ready {{ pre_ready_replicas }}/{{ pre_desired_replicas }}, image {{ pre_image }}"
-              - "{{ 'would run: kubectl rollout ' + ('restart' if recovery_action == 'restart' else 'undo') + ' deployment/' + k8s_deployment if ansible_check_mode else 'after: ' + (post | to_json) }}"
+              - "{{ 'would run: kubectl rollout ' + ('restart' if recovery_action == 'restart' else 'undo') + ' deployment/traceguard' if ansible_check_mode else 'after: ' + (post | to_json) }}"
 
       rescue:
         - name: Failure summary
           ansible.builtin.fail:
             msg: >-
-              RESULT: FAILURE during recovery action '{{ recovery_action }}' on
-              {{ k8s_namespace }}/{{ k8s_deployment }}. Failed task: "{{ ansible_failed_task.name | default('unknown') }}".
-              Detail: {{ ansible_failed_result.msg | default(ansible_failed_result.stderr | default('see output above')) }}.
-              Next: kubectl --context {{ k8s_context }} -n {{ k8s_namespace }} describe deploy/{{ k8s_deployment }}
+              RESULT: FAILURE during recovery action '{{ recovery_action }}'.
+              Failed task: "{{ ansible_failed_task.name | default('unknown') }}".
+              Detail: {{ ((ansible_failed_result.msg | default(ansible_failed_result.stderr | default('see output above'))) | string) | regex_replace('[.]+$', '') }}.
+              Next: kubectl --context kind-traceguard -n traceguard describe deploy/traceguard
