@@ -27,11 +27,27 @@ class Settings:
     incident_min_samples: int = 5
     slow_fault_delay_ms: int = 1500
     jaeger_ui_url: str = "http://localhost:16686"
+    # Public demo mode: global fault injection is impossible; only per-request sandboxed scenarios exist.
+    public_demo: bool = False
+    # Embedded telemetry (bounded in-memory stores used by the dashboard).
+    history_interval_s: float = 5.0
+    history_max_points: int = 720          # one hour at the default 5 s interval
+    trace_store_max_traces: int = 200
+    trace_store_max_spans_per_trace: int = 100
+    demo_incident_history: int = 100
+    # Sandboxed scenario limits and rate limits (per client key).
+    sandbox_max_requests: int = 8
+    sandbox_max_delay_ms: int = 2000
+    sandbox_max_concurrent_runs: int = 2
+    rate_limit_runs_per_min: int = 10
+    rate_limit_api_per_min: int = 240
+    # Only trust CF-Connecting-IP / X-Forwarded-For when deployed behind a proxy you control.
+    trust_proxy_headers: bool = False
 
     @property
     def fault_injection_allowed(self) -> bool:
-        """Both conditions are required, so a stray flag alone can't enable faults in production."""
-        return self.environment == "local" and self.enable_fault_injection
+        """All conditions are required, so a stray flag alone can't enable faults in production or public demo."""
+        return self.environment == "local" and self.enable_fault_injection and not self.public_demo
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -50,4 +66,11 @@ class Settings:
             incident_min_samples=int(os.getenv("INCIDENT_MIN_SAMPLES", cls.incident_min_samples)),
             slow_fault_delay_ms=int(os.getenv("SLOW_FAULT_DELAY_MS", cls.slow_fault_delay_ms)),
             jaeger_ui_url=os.getenv("JAEGER_UI_URL", cls.jaeger_ui_url),
+            public_demo=_bool("TRACEGUARD_PUBLIC_DEMO", False),
+            history_interval_s=float(os.getenv("HISTORY_INTERVAL_S", cls.history_interval_s)),
+            history_max_points=int(os.getenv("HISTORY_MAX_POINTS", cls.history_max_points)),
+            trace_store_max_traces=int(os.getenv("TRACE_STORE_MAX_TRACES", cls.trace_store_max_traces)),
+            rate_limit_runs_per_min=int(os.getenv("RATE_LIMIT_RUNS_PER_MIN", cls.rate_limit_runs_per_min)),
+            rate_limit_api_per_min=int(os.getenv("RATE_LIMIT_API_PER_MIN", cls.rate_limit_api_per_min)),
+            trust_proxy_headers=_bool("TRUST_PROXY_HEADERS", False),
         )

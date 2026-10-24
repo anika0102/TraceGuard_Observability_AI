@@ -26,6 +26,11 @@ INCIDENTS = Counter(
     ["type", "severity"],
 )
 ACTIVE_INCIDENTS = Gauge("traceguard_active_incidents", "Currently open incidents by type", ["type"])
+# Latency of the recommendation workflow itself (covers /recommend and sandboxed demo runs, which the HTTP
+# histogram above cannot see because they are not HTTP /recommend requests).
+RECOMMEND_DURATION = Histogram(
+    "traceguard_recommend_duration_seconds", "Recommendation workflow latency", buckets=LATENCY_BUCKETS,
+)
 
 
 def init_label_sets() -> None:

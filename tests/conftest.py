@@ -34,4 +34,19 @@ def prod_client(spans):
     return TestClient(app)
 
 
+def build_client(**settings_kw) -> TestClient:
+    """A fresh app with custom settings and an empty embedded trace store."""
+    from app import telemetry
+    app = create_app(make_settings(**settings_kw))
+    app.state.crash_fn = lambda: None
+    telemetry.trace_store().clear()
+    return TestClient(app)
+
+
+@pytest.fixture
+def dash():
+    """Client for dashboard tests (local mode, fault injection allowed, clean span store)."""
+    return build_client()
+
+
 REQ = {"user_id": "user-1", "category": "electronics", "budget": 250}

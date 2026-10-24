@@ -15,17 +15,27 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcessor, SpanExporter
 
 from .config import Settings
+from .trace_store import TraceStore
 
 _provider: Optional[TracerProvider] = None
 _otlp_attached = False
 
-# Probes and scrapes would drown real traffic in trace storage, so they are not traced.
-EXCLUDED_URLS = "health,ready,metrics"
+# Probes, scrapes and the dashboard's own polling would drown real traffic in trace storage, so they are not
+# traced (regexes matched against the URL). Business requests (/recommend) and sandbox runs are traced.
+EXCLUDED_URLS = "health,ready,metrics,ui/,/ui$,api/,incidents,console,/$"
+
+_trace_store: Optional[TraceStore] = None
+
+
+def trace_store() -> TraceStore:
+    """The process-wide bounded span store behind the dashboard's trace views."""
+    assert _trace_store is not None, "init_tracing() has not run"
+    return _trace_store
 
 
 def init_tracing(settings: Settings, extra_exporters: Iterable[SpanExporter] = ()) -> TracerProvider:
     """Create the global TracerProvider once; later calls only attach additional exporters."""
-    global _provider, _otlp_attached
+    global _provider, _otlp_attached, _trace_store
     if _provider is None:
         resource = Resource.create({
             "service.name": settings.service_name,
@@ -34,6 +44,8 @@ def init_tracing(settings: Settings, extra_exporters: Iterable[SpanExporter] = (
         })
         _provider = TracerProvider(resource=resource)
         trace.set_tracer_provider(_provider)
+        _trace_store = TraceStore(settings.trace_store_max_traces, settings.trace_store_max_spans_per_trace)
+        _provider.add_span_processor(_trace_store)
     if settings.otlp_endpoint and not _otlp_attached:
         # insecure=True: plaintext gRPC inside the local cluster/compose network only.
         exporter = OTLPSpanExporter(endpoint=settings.otlp_endpoint, insecure=True)

@@ -2,43 +2,37 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
+import contextlib
 import logging
 import os
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Callable, Optional
 
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from opentelemetry import trace
-from opentelemetry.trace import Status, StatusCode
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
-from . import domain, metrics, telemetry
+from . import metrics, telemetry, ui_api
 from .config import Settings
 from .faults import FaultState
 from .incident_detection import INCIDENT_TYPES, IncidentDetector, Sample
-from .schemas import (Correctness, FaultRequest, ProductOut, RecommendRequest, RecommendResponse, Scenario)
+from .metrics_history import MetricsHistory
+from .pipeline import RecommendPipeline, record_request_metric
+from .ratelimit import RateLimiter
+from .sandbox import SandboxRunner
+from .schemas import FaultRequest, RecommendRequest, RecommendResponse, Scenario
 
 log = logging.getLogger("traceguard.app")
 
-
-class InvalidInput(Exception):
-    pass
-
-
-class UpstreamFailure(Exception):
-    """Injected failure in the recommendation step."""
-
-
-def _product_out(p: Optional[domain.Product]) -> Optional[ProductOut]:
-    return ProductOut(sku=p.sku, name=p.name, category=p.category, price=p.price, score=p.score) if p else None
-
-
-def _hash_user(user_id: str) -> str:
-    return hashlib.sha256(user_id.encode()).hexdigest()[:12]  # pseudonymised; never a metric label
+UI_DIR = Path(__file__).parent / "ui"
+# Strict CSP for the dashboard: only same-origin scripts/styles/fetches, no inline code, no framing.
+UI_CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; "
+          "font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 
 
 def _hard_exit() -> None:  # pragma: no cover - replaced in tests
@@ -51,12 +45,30 @@ def create_app(settings: Optional[Settings] = None, extra_span_exporters=()) -> 
     provider = telemetry.init_tracing(settings, extra_span_exporters)
     tracer = provider.get_tracer("traceguard.workflow")
 
-    app = FastAPI(title="TraceGuard", version=settings.service_version)
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        async def sampler():  # feeds the dashboard's metric history from this process's own registry
+            while True:
+                _app.state.history.sample()
+                await asyncio.sleep(settings.history_interval_s)
+        task = asyncio.create_task(sampler())
+        try:
+            yield
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    app = FastAPI(title="TraceGuard", version=settings.service_version, lifespan=lifespan)
     app.state.settings = settings
     app.state.faults = FaultState()
     app.state.detector = IncidentDetector(settings)
     app.state.crash_fn: Callable[[], None] = _hard_exit
     app.state.started = True
+    app.state.started_at = time.time()
+    app.state.history = MetricsHistory(settings.history_max_points, settings.history_interval_s)
+    app.state.api_limiter = RateLimiter(settings.rate_limit_api_per_min)
+    app.state.run_limiter = RateLimiter(settings.rate_limit_runs_per_min)
     faults: FaultState = app.state.faults
     detector: IncidentDetector = app.state.detector
 
@@ -76,23 +88,14 @@ def create_app(settings: Optional[Settings] = None, extra_span_exporters=()) -> 
         for t in INCIDENT_TYPES:
             metrics.ACTIVE_INCIDENTS.labels(type=t).set(1 if t in active_types else 0)
 
-    @contextmanager
-    def operation(name: str):
-        """Child span with operation name, duration and status attributes."""
-        start = time.perf_counter()
-        with tracer.start_as_current_span(f"recommend.{name}") as span:
-            span.set_attribute("traceguard.operation", name)
-            span.set_attribute("traceguard.fault_scenario", faults.scenario.value)
-            try:
-                yield span
-                span.set_attribute("traceguard.status", "ok")
-            except Exception as exc:
-                span.set_attribute("traceguard.status", "error")
-                span.record_exception(exc)
-                span.set_status(Status(StatusCode.ERROR, str(exc)))
-                raise
-            finally:
-                span.set_attribute("traceguard.duration_ms", round((time.perf_counter() - start) * 1000, 2))
+    app.state.is_ready = is_ready
+    app.state.is_healthy = lambda: faults.scenario is not Scenario.unhealthy
+
+    pipeline = RecommendPipeline(tracer, settings)
+    app.state.pipeline = pipeline
+    app.state.tracer = tracer
+    app.state.runner = SandboxRunner(pipeline, tracer, settings)
+    app.state.history.sample()  # baseline sample so the first interval can already be computed
 
     # -- generic HTTP metrics ------------------------------------------------------------
     @app.middleware("http")
@@ -130,87 +133,15 @@ def create_app(settings: Optional[Settings] = None, extra_span_exporters=()) -> 
     # -- business endpoint ---------------------------------------------------------------
     @app.post("/recommend", response_model=RecommendResponse)
     async def recommend(req: RecommendRequest):
-        start = time.perf_counter()
-        scenario = faults.scenario
-        server_span = trace.get_current_span()
-        server_span.set_attribute("traceguard.fault_scenario", scenario.value)
-        trace_id = telemetry.current_trace_id()
-        status_code, correct, body = 200, None, None
-
-        try:
-            with operation("validate_input") as sp:
-                sp.set_attribute("traceguard.user_hash", _hash_user(req.user_id))
-                sp.set_attribute("traceguard.category", req.category)
-                if req.category not in domain.CATEGORIES:
-                    raise InvalidInput(f"unknown category '{req.category}'")
-
-            with operation("lookup_catalog") as sp:  # simulated database / tool lookup
-                if scenario is Scenario.slow:
-                    delay = faults.delay_ms or settings.slow_fault_delay_ms
-                    sp.set_attribute("traceguard.injected_delay_ms", delay)
-                    await asyncio.sleep(delay / 1000)
-                found = domain.candidates(req.category, req.budget)
-                sp.set_attribute("traceguard.candidate_count", len(found))
-
-            with operation("compute_recommendation") as sp:
-                if faults.should_error():
-                    raise UpstreamFailure("injected failure in recommendation model")
-                ranked = domain.rank(found)
-                # wrong_result: a stale ranking serves the runner-up while everything looks healthy.
-                pick = ranked[1] if scenario is Scenario.wrong_result and len(ranked) > 1 else (
-                    ranked[0] if ranked else None)
-                sp.set_attribute("traceguard.actual_sku", pick.sku if pick else "none")
-
-            with operation("validate_business_rules") as sp:
-                expected = domain.expected_recommendation(req.category, req.budget)
-                exp_sku, act_sku = (expected.sku if expected else None), (pick.sku if pick else None)
-                # Invariants (budget, stock) plus comparison with the golden reference.
-                invariants_ok = pick is None or (pick.price <= req.budget and pick.in_stock)
-                correct = invariants_ok and exp_sku == act_sku
-                sp.set_attribute("traceguard.expected_sku", exp_sku or "none")
-                sp.set_attribute("traceguard.actual_sku", act_sku or "none")
-                sp.set_attribute("traceguard.outcome_correct", correct)
-                if not correct:
-                    sp.add_event("business_outcome_mismatch",
-                                 {"expected_sku": exp_sku or "none", "actual_sku": act_sku or "none"})
-                metrics.CORRECTNESS.labels("correct" if correct else "incorrect").inc()
-                server_span.set_attribute("traceguard.outcome_correct", correct)
-
-            with operation("build_response"):
-                latency_ms = round((time.perf_counter() - start) * 1000, 2)
-                body = RecommendResponse(
-                    trace_id=trace_id,
-                    recommendation=_product_out(pick),
-                    correctness=Correctness(
-                        checked=True, correct=correct, expected_sku=exp_sku, actual_sku=act_sku,
-                        detail="matches expected business result" if correct
-                        else "HTTP 200 but result differs from expected business result"),
-                    fault_scenario=scenario.value,
-                    latency_ms=latency_ms,
-                )
-        except InvalidInput as exc:
-            status_code = 400
-            server_span.set_status(Status(StatusCode.ERROR, "invalid input"))
-            result = JSONResponse({"error": "invalid_input", "detail": str(exc), "trace_id": trace_id}, 400)
-        except UpstreamFailure as exc:
-            status_code = 500
-            server_span.set_status(Status(StatusCode.ERROR, str(exc)))
-            log.error("recommendation failed", extra={"fields": {"fault_scenario": scenario.value}})
-            result = JSONResponse({"error": "upstream_failure", "detail": str(exc), "trace_id": trace_id}, 500)
-        else:
-            result = JSONResponse(body.model_dump(), 200)
-            log.info("recommendation served", extra={"fields": {
-                "fault_scenario": scenario.value, "outcome_correct": correct}})
-
-        duration_ms = (time.perf_counter() - start) * 1000
-        server_span.set_attribute("traceguard.duration_ms", round(duration_ms, 2))
-        metrics.RECOMMEND_REQUESTS.labels("ok" if status_code < 400 else ("client_error" if status_code < 500
-                                                                           else "error"), scenario.value).inc()
-        detector.record(Sample(ts=time.time(), duration_ms=duration_ms, status_code=status_code,
-                               correct=correct, trace_id=trace_id, scenario=scenario.value))
+        # App-wide fault state (local development only; empty/"none" in public demo mode).
+        outcome = await pipeline.run(req, faults, trace.get_current_span())
+        result = JSONResponse(outcome.content, outcome.status_code)
+        record_request_metric(outcome)
+        detector.record(Sample(ts=time.time(), duration_ms=outcome.duration_ms, status_code=outcome.status_code,
+                               correct=outcome.correct, trace_id=outcome.trace_id, scenario=outcome.scenario))
         run_detection()
-        if trace_id:
-            result.headers["X-Trace-Id"] = trace_id
+        if outcome.trace_id:
+            result.headers["X-Trace-Id"] = outcome.trace_id
         return result
 
     # -- fault injection (local development only) -----------------------------------------
@@ -222,6 +153,9 @@ def create_app(settings: Optional[Settings] = None, extra_span_exporters=()) -> 
     @app.post("/simulate-failure")
     def simulate_failure(req: FaultRequest):
         if not settings.fault_injection_allowed:
+            if settings.public_demo:
+                raise HTTPException(403, "global fault injection does not exist in public demo mode; "
+                                         "use the sandboxed scenarios on the dashboard")
             raise HTTPException(403, "fault injection is disabled (requires TRACEGUARD_ENV=local and "
                                      "TRACEGUARD_ENABLE_FAULT_INJECTION=true)")
         if req.clear_incident_window:
@@ -247,11 +181,45 @@ def create_app(settings: Optional[Settings] = None, extra_span_exporters=()) -> 
                                "incorrect_rate": settings.correctness_failure_threshold},
                 "active": [i.as_dict() for i in detector.active()],
                 "history": [i.as_dict() for i in detector.history()],
-                "jaeger_ui_url": settings.jaeger_ui_url}
+                "jaeger_ui_url": None if settings.public_demo else settings.jaeger_ui_url}
 
     @app.get("/console", response_class=HTMLResponse)
     def console():
         return CONSOLE_HTML
+
+    # -- unified dashboard (UI shell + JSON API) -------------------------------------------
+    @app.middleware("http")
+    async def security_headers(request: Request, call_next):
+        response = await call_next(request)
+        path = request.url.path
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        if path == "/" or path.startswith("/ui"):
+            response.headers["Content-Security-Policy"] = UI_CSP
+            response.headers["X-Frame-Options"] = "DENY"
+        if path.startswith("/api/"):
+            response.headers["Cache-Control"] = "no-store"
+        return response
+
+    app.include_router(ui_api.router)
+    shell = UI_DIR / "static" / "index.html"
+
+    @app.get("/", include_in_schema=False)
+    def root():
+        return RedirectResponse("/ui/", status_code=307)
+
+    @app.get("/ui", include_in_schema=False)
+    @app.get("/ui/", include_in_schema=False)
+    def ui_home():
+        return FileResponse(shell, media_type="text/html")
+
+    @app.get("/ui/{section}", include_in_schema=False)
+    def ui_section(section: str):
+        if section not in ui_api.SECTIONS:
+            raise HTTPException(404, "unknown section")
+        return FileResponse(shell, media_type="text/html")
+
+    app.mount("/ui/static", StaticFiles(directory=UI_DIR / "static"), name="ui-static")
 
     for sc in Scenario:
         metrics.FAULT_ACTIVE.labels(sc.value).set(1 if sc is Scenario.none else 0)
