@@ -26,3 +26,27 @@ INCIDENTS = Counter(
     ["type", "severity"],
 )
 ACTIVE_INCIDENTS = Gauge("traceguard_active_incidents", "Currently open incidents by type", ["type"])
+
+
+def init_label_sets() -> None:
+    """Create every bounded counter series at 0 so Prometheus sees 0 -> N on the first event.
+
+    A counter series that first appears with a non-zero value makes rate()/increase() report 0 for
+    that first burst. All label values below are fixed enums, so this adds ~40 series in total.
+    """
+    from .incident_detection import INCIDENT_TYPES
+    from .schemas import Scenario
+
+    for status in ("ok", "client_error", "error"):
+        for scenario in Scenario:
+            RECOMMEND_REQUESTS.labels(status, scenario.value)
+    for result in ("correct", "incorrect"):
+        CORRECTNESS.labels(result)
+    for itype in INCIDENT_TYPES:
+        for severity in ("warning", "critical"):
+            INCIDENTS.labels(itype, severity)
+    for code in ("200", "400", "422", "500"):
+        HTTP_REQUESTS.labels("/recommend", "POST", code)
+
+
+init_label_sets()

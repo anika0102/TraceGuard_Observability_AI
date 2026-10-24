@@ -64,7 +64,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(traceguard_recommend_requests_total{status=\"error\"}[1m])) / sum(rate(traceguard_recommend_requests_total[1m]))",
+          "expr": "(sum(rate(traceguard_recommend_requests_total{status=\"error\"}[1m])) or vector(0)) / sum(rate(traceguard_recommend_requests_total[1m]))",
           "legendFormat": "error rate",
           "refId": "A"
         }
@@ -75,7 +75,7 @@
         },
         "overrides": []
       },
-      "description": "Share of /recommend requests that returned 5xx."
+      "description": "Share of /recommend requests that returned 5xx (4xx count in the denominator only). Shows 0% when there are requests but no errors; 'No data' means no requests."
     },
     {
       "id": 3,

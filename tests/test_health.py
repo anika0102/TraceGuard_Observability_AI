@@ -1,6 +1,28 @@
+import subprocess
+import sys
+
 from prometheus_client.parser import text_string_to_metric_families
 
 from .conftest import REQ
+
+
+def test_counters_exist_at_zero_before_first_event():
+    """Fresh interpreter: a counter that first appears non-zero makes Prometheus rate()/increase() miss the
+    first burst, so the error/incorrect/incident series must be exported as 0 from startup."""
+    code = (
+        "from prometheus_client import REGISTRY\n"
+        "from app import metrics\n"
+        "get = REGISTRY.get_sample_value\n"
+        "checks = {\n"
+        " 'error': get('traceguard_recommend_requests_total', {'status': 'error', 'scenario': 'error'}),\n"
+        " 'incorrect': get('traceguard_correctness_checks_total', {'result': 'incorrect'}),\n"
+        " 'incident': get('traceguard_incidents_total', {'type': 'correctness', 'severity': 'critical'}),\n"
+        "}\n"
+        "print(checks)\n"
+        "assert all(v == 0.0 for v in checks.values()), checks\n"
+    )
+    done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert done.returncode == 0, done.stdout + done.stderr
 
 
 def test_health_and_ready(client):
