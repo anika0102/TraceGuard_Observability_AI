@@ -1,0 +1,179 @@
+{
+  "id": "D",
+  "title": "Kubernetes pod failure and recovery",
+  "source": "recorded",
+  "recorded_at": "2026-10-24T08:29:41+00:00",
+  "git_commit": "71a9946",
+  "environment": {
+    "cluster": "kind (single node), Kubernetes v1.32.2",
+    "kind": "kind v0.27.0",
+    "docker_engine": "27.3.1",
+    "ansible": "ansible-core 2.21.5",
+    "host": "WSL2 (Linux) on Windows 11 with Docker Desktop",
+    "app_image": "traceguard:0.1.0 (replicas: 1, probes: startup/liveness/readiness)"
+  },
+  "summary": {
+    "headline": "Container crash: Ready again 4.5 s after the process exited (same pod, restart count 0 to 1). Pod deleted: replacement pod Ready 4.6 s after the delete.",
+    "pod_before": "traceguard-6784585bc9-nt46l",
+    "pod_after_delete": "traceguard-6784585bc9-mnjgm",
+    "restart_count_after_crash": 1
+  },
+  "timeline": [
+    {
+      "t_s": 0.0,
+      "category": "pod",
+      "event": "pod traceguard-6784585bc9-nt46l appeared (running)"
+    },
+    {
+      "t_s": 2.3,
+      "category": "action",
+      "event": "scenario D started: baseline, 1 pod Ready"
+    },
+    {
+      "t_s": 2.3,
+      "category": "action",
+      "event": "D1: POST /simulate-failure {scenario: crash}; the process exits about 1 s later"
+    },
+    {
+      "t_s": 3.8,
+      "category": "pod",
+      "event": "pod traceguard-6784585bc9-nt46l: container terminated (exit 1)"
+    },
+    {
+      "t_s": 3.8,
+      "category": "pod",
+      "event": "pod traceguard-6784585bc9-nt46l is no longer Ready"
+    },
+    {
+      "t_s": 4.5,
+      "category": "pod",
+      "event": "pod traceguard-6784585bc9-nt46l: container running"
+    },
+    {
+      "t_s": 4.5,
+      "category": "pod",
+      "event": "pod traceguard-6784585bc9-nt46l: restart count 0 -> 1"
+    },
+    {
+      "t_s": 6.8,
+      "category": "prometheus",
+      "event": "Prometheus target up: 1 -> 0"
+    },
+    {
+      "t_s": 8.2,
+      "category": "pod",
+      "event": "pod traceguard-6784585bc9-nt46l became Ready"
+    },
+    {
+      "t_s": 11.8,
+      "category": "prometheus",
+      "event": "Prometheus target up: 0 -> 1"
+    },
+    {
+      "t_s": 18.1,
+      "category": "action",
+      "event": "D2: kubectl delete pod traceguard-6784585bc9-nt46l"
+    },
+    {
+      "t_s": 18.3,
+      "category": "pod",
+      "event": "pod traceguard-6784585bc9-mnjgm appeared (waiting (ContainerCreating))"
+    },
+    {
+      "t_s": 18.3,
+      "category": "pod",
+      "event": "pod traceguard-6784585bc9-nt46l is terminating"
+    },
+    {
+      "t_s": 19.0,
+      "category": "pod",
+      "event": "pod traceguard-6784585bc9-nt46l: container terminated (exit 0)"
+    },
+    {
+      "t_s": 19.0,
+      "category": "pod",
+      "event": "pod traceguard-6784585bc9-nt46l is no longer Ready"
+    },
+    {
+      "t_s": 19.8,
+      "category": "pod",
+      "event": "pod traceguard-6784585bc9-mnjgm: container running"
+    },
+    {
+      "t_s": 19.8,
+      "category": "pod",
+      "event": "pod traceguard-6784585bc9-nt46l removed"
+    },
+    {
+      "t_s": 21.9,
+      "category": "prometheus",
+      "event": "Prometheus target up: 1 -> 0"
+    },
+    {
+      "t_s": 22.7,
+      "category": "pod",
+      "event": "pod traceguard-6784585bc9-mnjgm became Ready"
+    },
+    {
+      "t_s": 27.1,
+      "category": "prometheus",
+      "event": "Prometheus target up: 0 -> 1"
+    }
+  ],
+  "measurements": [
+    {
+      "name": "D1: process exit to pod Ready again",
+      "value": 4.5,
+      "unit": "s",
+      "note": "kubelet restarted the container inside the same pod"
+    },
+    {
+      "name": "D2: pod delete to replacement Ready",
+      "value": 4.6,
+      "unit": "s",
+      "note": "ReplicaSet created a new pod with a new name"
+    },
+    {
+      "name": "D2: delete to the local port-forward serving the new process",
+      "value": 6.5,
+      "unit": "s",
+      "note": "supervised forward reconnected without manual action"
+    },
+    {
+      "name": "D1: time with no Ready pod (observer, about 1 s resolution)",
+      "value": 4.5,
+      "unit": "s",
+      "note": "while no pod is Ready the app cannot emit traces or metrics"
+    },
+    {
+      "name": "D2: time with no Ready pod (observer, about 1 s resolution)",
+      "value": 4.4,
+      "unit": "s",
+      "note": "the single replica is the only endpoint, so deleting it is a short outage"
+    },
+    {
+      "name": "D1: Prometheus recorded up=0",
+      "value": "yes",
+      "unit": "",
+      "note": "only recorded if a 5 s scrape lands inside the outage"
+    },
+    {
+      "name": "D2: Prometheus recorded up=0",
+      "value": "yes",
+      "unit": "",
+      "note": "only recorded if a 5 s scrape lands inside the outage"
+    },
+    {
+      "name": "Process starts seen by Prometheus during this recording",
+      "value": 2,
+      "unit": "",
+      "note": "changes in process_start_time over the last 39 s: one container restart plus one pod replacement"
+    }
+  ],
+  "notes": [
+    "One run on one laptop; timings vary between runs and are not a benchmark.",
+    "Readiness gates traffic: a new pod receives requests only after /ready passes.",
+    "In-memory application state (fault flags, incident window and history) resets with the process.",
+    "Prometheus up=0 appeared in most but not all observed outages: a short outage can fall between two scrapes."
+  ]
+}

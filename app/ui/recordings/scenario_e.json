@@ -1,0 +1,138 @@
+{
+  "id": "E",
+  "title": "Controlled Ansible recovery",
+  "source": "recorded",
+  "recorded_at": "2026-10-24T08:30:54+00:00",
+  "git_commit": "840f81b",
+  "environment": {
+    "cluster": "kind (single node), Kubernetes v1.32.2",
+    "kind": "kind v0.27.0",
+    "docker_engine": "27.3.1",
+    "ansible": "ansible-core 2.21.5",
+    "host": "WSL2 (Linux) on Windows 11 with Docker Desktop",
+    "app_image": "traceguard:0.1.0 (replicas: 1, probes: startup/liveness/readiness)"
+  },
+  "summary": {
+    "headline": "Silent failure (HTTP 200, 6/6 wrong results) detected as a correctness incident; the playbook's dry run changed 0 things, the real run finished in 17.4 s with result SUCCESS with no moment without a Ready pod, and the next request was correct=True.",
+    "pod_before": "traceguard-6f8d5987fd-9crzg",
+    "pod_after": "traceguard-596f74ddb8-5hfvn",
+    "playbook_result": "SUCCESS"
+  },
+  "timeline": [
+    {
+      "t_s": 0.0,
+      "category": "pod",
+      "event": "pod traceguard-6f8d5987fd-9crzg appeared (running)"
+    },
+    {
+      "t_s": 2.0,
+      "category": "action",
+      "event": "scenario E started: baseline, 1 pod Ready"
+    },
+    {
+      "t_s": 2.0,
+      "category": "action",
+      "event": "injected a silent failure: POST /simulate-failure {scenario: wrong_result}"
+    },
+    {
+      "t_s": 2.1,
+      "category": "action",
+      "event": "6 requests all returned HTTP 200 but 6/6 results were wrong; /health says 'ok' and /ready says 'ready'; open incidents: correctness"
+    },
+    {
+      "t_s": 2.3,
+      "category": "action",
+      "event": "operator runs: ansible-playbook recover-deployment.yml --check (dry run)"
+    },
+    {
+      "t_s": 5.9,
+      "category": "action",
+      "event": "dry run finished: DRY RUN (no changes made) (changes made: 0)"
+    },
+    {
+      "t_s": 5.9,
+      "category": "action",
+      "event": "operator runs: ansible-playbook recover-deployment.yml (rollout restart)"
+    },
+    {
+      "t_s": 14.3,
+      "category": "pod",
+      "event": "pod traceguard-596f74ddb8-5hfvn appeared (waiting (ContainerCreating))"
+    },
+    {
+      "t_s": 15.5,
+      "category": "pod",
+      "event": "pod traceguard-596f74ddb8-5hfvn: container running"
+    },
+    {
+      "t_s": 21.1,
+      "category": "pod",
+      "event": "pod traceguard-596f74ddb8-5hfvn became Ready"
+    },
+    {
+      "t_s": 21.1,
+      "category": "pod",
+      "event": "pod traceguard-6f8d5987fd-9crzg is terminating"
+    },
+    {
+      "t_s": 22.0,
+      "category": "pod",
+      "event": "pod traceguard-6f8d5987fd-9crzg: container terminated (exit 0)"
+    },
+    {
+      "t_s": 22.0,
+      "category": "pod",
+      "event": "pod traceguard-6f8d5987fd-9crzg is no longer Ready"
+    },
+    {
+      "t_s": 22.9,
+      "category": "pod",
+      "event": "pod traceguard-6f8d5987fd-9crzg removed"
+    },
+    {
+      "t_s": 23.3,
+      "category": "action",
+      "event": "playbook finished: SUCCESS; post-recovery probe {'ready': 'ready', 'http_status': 200, 'correct': True, 'sku': 'E-100'}"
+    },
+    {
+      "t_s": 29.4,
+      "category": "action",
+      "event": "after recovery: next request correct=True, injected fault state = none (reset with the process)"
+    }
+  ],
+  "measurements": [
+    {
+      "name": "Dry run (--check): changes made",
+      "value": 0,
+      "unit": "",
+      "note": "read-only checks only; the restart is reported as 'would run'"
+    },
+    {
+      "name": "Real run: tasks ok / changed / failed",
+      "value": "11 / 1 / 0",
+      "unit": ""
+    },
+    {
+      "name": "Real run: playbook wall time",
+      "value": 17.4,
+      "unit": "s",
+      "note": "includes waiting for the rolling update and the verification probe"
+    },
+    {
+      "name": "Time with no Ready pod (observer, about 1 s resolution)",
+      "value": 0.0,
+      "unit": "s",
+      "note": "rolling update with maxUnavailable: 0 keeps the old pod Ready until the new one is"
+    },
+    {
+      "name": "Post-recovery probe (inside the pod)",
+      "value": "ready=ready, HTTP 200, correct=True",
+      "unit": ""
+    }
+  ],
+  "notes": [
+    "One run on one laptop. The playbook is restricted to deployment traceguard in namespace traceguard of the kind-traceguard context; extra-vars cannot widen that (tested).",
+    "Rollback (recovery_action=rollback) exists and was verified locally; it is not part of this recording.",
+    "The injected fault lives in process memory, so any restart clears it. A restart does not fix a real bad release: that is what rollback is for."
+  ]
+}
