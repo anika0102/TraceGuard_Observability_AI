@@ -1,0 +1,29 @@
+# Render Blueprint: one free web service running the public TraceGuard demo.
+# Everything the dashboard needs is inside this one container (embedded traces and metrics, sandboxed scenarios,
+# recorded scenarios D and E). No Prometheus, Grafana, Jaeger, Kubernetes or database is involved.
+#
+# Cost safety: `plan: free` is set EXPLICITLY (Render defaults to a paid instance when it is omitted), nothing here
+# uses a disk, extra instances, a database or any other paid feature, and automatic deploys are off so a git push
+# cannot consume build minutes unexpectedly (use "Manual Deploy" in the dashboard).
+services:
+  - type: web
+    name: traceguard
+    runtime: docker
+    plan: free
+    region: oregon
+    branch: main
+    dockerfilePath: ./docker/Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    autoDeployTrigger: "off"
+    envVars:
+      # Public demo mode: global fault injection cannot exist; operator routes (/metrics, /incidents, /console,
+      # /simulate-failure) and the API docs answer 404.
+      - key: TRACEGUARD_PUBLIC_DEMO
+        value: "true"
+      - key: TRACEGUARD_ENV
+        value: production
+      # Render's proxy overwrites this header with the real client IP; rate limits key on it. Verified after deploy
+      # (see README "Verifying the public deployment"). If unset or malformed the app falls back to the socket peer.
+      - key: CLIENT_IP_HEADER
+        value: True-Client-IP

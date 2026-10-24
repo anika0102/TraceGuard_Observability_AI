@@ -18,4 +18,6 @@ USER 10001
 
 EXPOSE 8000
 # Single worker on purpose: incident-detection window and fault state are in-process.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Binds 0.0.0.0 on $PORT (Render injects it, default 10000); falls back to 8000 for Compose and Kubernetes.
+# --limit-concurrency answers 503 instead of queueing without bound on a small free instance.
+CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --limit-concurrency 64 --timeout-keep-alive 5 --no-server-header"]
