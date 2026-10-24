@@ -1,6 +1,6 @@
 # TraceGuard. interview notes
 
-Be upfront about status (details in README.md and DEPLOY_RENDER.md): the whole local stack was run and verified (84 automated tests; Docker image; Compose; app -> Collector -> Jaeger; Prometheus; Grafana via its API; kind deployment; scenarios A-E; Ansible dry run, restart and rollback; `scripts/verify.sh` 7/7). Not verified: Minikube, macOS, how the Grafana/Jaeger pages look visually, and anything beyond single-run timings. Before a live demo, run `scripts/verify.sh` once. This project does **not** use Dynatrace.
+Be upfront about status (details in README.md and DEPLOY_RENDER.md): the whole local stack was run and verified (237 automated tests; Docker image; Compose; app -> Collector -> Jaeger; Prometheus; Grafana via its API; kind deployment; scenarios A-E; Ansible dry run, restart and rollback; `scripts/verify.sh` 7/7). Not verified: Minikube, macOS, how the Grafana/Jaeger pages look visually, and anything beyond single-run timings. Before a live demo, run `scripts/verify.sh` once. This project does **not** use Dynatrace.
 
 Honest talking points that show engineering judgement (each was found and fixed during validation, with a test): the allow-list in the Ansible playbook was overridable by `-e` and is now literals; Prometheus counters created lazily hid the first burst of errors; port-forwards died with a one-shot shell and after pod replacement; a hard-coded "Prometheus up=0" claim was wrong in about one run in four, so the demo now reports only what Prometheus recorded.
 
