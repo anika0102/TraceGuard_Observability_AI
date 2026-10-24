@@ -24,6 +24,6 @@ services:
       - key: TRACEGUARD_ENV
         value: production
       # Render's proxy overwrites this header with the real client IP; rate limits key on it. Verified after deploy
-      # (see README "Verifying the public deployment"). If unset or malformed the app falls back to the socket peer.
+      # (see DEPLOY_RENDER.md, "Verify the public deployment"). If unset or malformed the app falls back to the socket peer.
       - key: CLIENT_IP_HEADER
         value: True-Client-IP
