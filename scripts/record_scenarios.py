@@ -200,7 +200,8 @@ def environment():
 
 def meta(sid, title):
     commit = sh(["git", "rev-parse", "--short", "HEAD"]).stdout.strip()
-    dirty = bool(sh(["git", "status", "--porcelain"]).stdout.strip())
+    # ignore the recorder's own output folder, or recording D would mark the tree dirty for E
+    dirty = bool(sh(["git", "status", "--porcelain", "--", ".", ":(exclude)app/ui/recordings"]).stdout.strip())
     return {"id": sid, "title": title, "source": "recorded",
             "recorded_at": datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat(),
             "git_commit": commit + ("+uncommitted" if dirty else ""), "environment": environment()}
