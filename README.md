@@ -1,9 +1,8 @@
 # TraceGuard
 
-A small project where I practice observability and recovery on Kubernetes. It's a fake product-recommendation API. I can make it slow, make it fail, or make it return a *wrong* answer with HTTP 200, and then see how that shows up in traces, metrics and incidents.
+A small project where I practice observability and recovery on Kubernetes. It's a toy product-recommendation API. I can make it slow, make it fail, or make it return a *wrong* answer with HTTP 200, and then see how that shows up in traces, metrics and incidents.
 
 **Live demo:** https://traceguard-86lh.onrender.com
-(Free tier, so the first load after it's been idle can take about a minute.)
 
 ## How it fits together
 
@@ -39,13 +38,3 @@ Tests: `pytest` (237 pass).
 
 ## Deploying
 The Render steps are in [DEPLOY_RENDER.md](DEPLOY_RENDER.md).
-
-## Troubleshooting
-- A port is already in use: stop the other program or change the port mapping.
-- No traces in Jaeger: check the collector logs and that the app can reach it.
-- Port-forward stopped after a pod restart: `scripts/port-forward.sh restart`.
-
-## Known limits
-- Traces, metrics and incidents are kept in memory and reset when the app restarts.
-- One replica per deployment, and Render's free tier sleeps when idle.
-- A very short pod restart can be too quick for the 15-second alert.
